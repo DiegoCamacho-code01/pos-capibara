@@ -49,4 +49,4 @@ MENU = {
 }
 
 # --- LAS 5 PESTAÑAS DE OPERACIÓN ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛒 Carrito", "🥤 Puesto", "✅ Listos",
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛒 Carrito", "🥤 Puesto", "✅ Listos", "🍳 Cocina", "📓 Pagos"])
