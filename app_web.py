@@ -45,7 +45,7 @@ if 'ticket' not in st.session_state:
 # --- EL MENÚ CAPIBARA REESTRUCTURADO ---
 MENU = {
     "☕ Café Básico (Carrito - Directo)": {
-        "Americano Caliente": 30, "Americano Frio": 35, "Café de Olla": 25
+        "Cafe": 20, "Cafe vainilla": 20, "Café avellana": 20
     },
     "🏪 Cafetería Completa (Puesto)": {
         "Mocha Caliente": 35, "Mocha Frio": 40, "Latte Vainilla Cal.": 40, "Latte Vainilla Frio": 45, 
