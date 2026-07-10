@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 # --- CONFIGURACIÓN DE PÁGINA Y CSS ---
-st.set_page_config(page_title="POS Capibara", layout="centered")
+st.set_page_config(page_title="POS Capibara", layout="wide")
 
 st.markdown("""
 <style>
@@ -18,6 +18,8 @@ st.markdown("""
 
 # --- ZONA HORARIA MÉXICO ---
 zona_mx = timezone(timedelta(hours=-6))
+hoy_obj = datetime.now(zona_mx).date()
+hoy_str = hoy_obj.strftime("%d/%m/%Y")
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
 @st.cache_resource
@@ -32,17 +34,20 @@ def conectar_sheets():
 
 sh = conectar_sheets()
 
-# --- MEMORIA DE LOS DOS CARRITOS ---
+# --- MEMORIA RAM Y RESETEO DE CAMPOS ---
 if 'ticket_carrito' not in st.session_state: st.session_state.ticket_carrito = []
 if 'ticket_puesto' not in st.session_state: st.session_state.ticket_puesto = []
+if 'cli_car' not in st.session_state: st.session_state.cli_car = "Mostrador"
+if 'tie_car' not in st.session_state: st.session_state.tie_car = "Ahora"
+if 'dia_car' not in st.session_state: st.session_state.dia_car = "Hoy"
 
-# --- GENERADOR DE HORAS (Hora México, De 30 en 30 min) ---
+# --- GENERADOR DE HORAS (12 Horas hacia adelante) ---
 def obtener_horas_disponibles():
     ahora = datetime.now(zona_mx)
     minutos_extra = 30 - (ahora.minute % 30)
     siguiente_hora = ahora + timedelta(minutes=minutos_extra)
     horas = []
-    for _ in range(8):
+    for _ in range(24): # 24 intervalos de 30 min = 12 horas
         horas.append(siguiente_hora.strftime("%H:%M"))
         siguiente_hora += timedelta(minutes=30)
     return horas
@@ -55,11 +60,11 @@ MENU = {
     "🥤 Frappés (Puesto - Opcional)": {"Fresa": 65, "Taro": 65, "Chai": 65, "Matcha": 65, "Rompope": 65, "Red Velvet": 65, "Pistache": 65, "Galleta": 65, "Mora": 65, "Cereza": 65},
     "🥛 Esquimos (Puesto - Opcional)": {"Fresa": 45, "Mocha": 45, "Cafe": 45, "Nuez": 45, "Chocolate": 45, "Rompope": 45, "Vainilla": 45},
     "🍧 Chamoyadas (Puesto - Opcional)": {"Fresa": 65, "Mango": 65, "Temporada": 65, "Refresher Darks": 65, "+ Bolitas Explosivas": 10},
-    "🥪 Tortas (Cocina)": {"Cubana": 65, "Milanesa de Res": 40, "Milanesa de Pollo": 40, "Salchicha": 35, "Huevo": 35, "Huevo c/ Jamón": 35},
+    "🥪 Tortas (Carrito - Directo)": {"Cubana": 65, "Milanesa de Res": 40, "Milanesa de Pollo": 40, "Salchicha": 35, "Huevo": 35, "Huevo c/ Jamón": 35},
     "🥗 Platillos (Cocina)": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 55, "Torta de Chilaquiles": 40}
 }
 
-# --- FUNCIÓN MAESTRA DE MONITORES ---
+# --- FUNCIÓN MAESTRA DE MONITORES (CON FILTRO DE FECHA) ---
 def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
     if not sh: return
     try:
@@ -68,10 +73,17 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
         if len(datos) <= 1:
             st.info("Todo tranquilo por aquí. 😎")
             return
+        
         mostrados = 0
         for i, fila in enumerate(datos[1:], start=2):
             if len(fila) < 7: continue
+            
             cliente, producto, destino, notas, tiempo, hora, estado = fila[0], fila[1], fila[2], fila[3], fila[4], fila[5], fila[6]
+            fecha_fila = fila[8] if len(fila) > 8 else hoy_str
+            
+            # Solo mostrar los pedidos que son para HOY
+            if fecha_fila != hoy_str:
+                continue
             
             mostrar = False
             if destino_filtro: 
@@ -93,37 +105,50 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
                             ws_ops.update_cell(i, 7, nuevo_estado)
                             st.rerun()
                 st.divider()
-        if mostrados == 0: st.info("No hay tickets pendientes en esta área.")
+        if mostrados == 0: st.info("No hay tickets pendientes para hoy en esta área.")
     except Exception as e:
         st.error(f"Error de lectura: {e}")
 
-# --- LAS 5 PESTAÑAS DE OPERACIÓN ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛒 Carrito", "🥤 Puesto", "✅ Listos", "🍳 Cocina", "📓 Pagos"])
+# --- LAS 6 PESTAÑAS DE OPERACIÓN ---
+tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs(["🛒 Carrito", "🥤 Puesto", "✅ Listos", "🍳 Cocina", "📅 Agendados", "📓 Pagos"])
 
 # ==========================================
 # PESTAÑA 1: EL CARRITO PRINCIPAL
 # ==========================================
 with tab1:
     st.title("🛒 Carrito Principal")
-    col_nom, col_hora = st.columns(2)
-    with col_nom: cliente = st.text_input("👤 Cliente (Obligatorio para deudas):", value="Mostrador", key="cli_car")
+    
+    # Parámetros del Pedido
+    col_nom, col_dia, col_hora = st.columns([2, 1.5, 1.5])
+    with col_nom: 
+        cliente = st.text_input("👤 Cliente (Obligatorio para deudas):", key="cli_car")
+    with col_dia:
+        dia_pedido = st.radio("📅 Día:", ["Hoy", "Mañana", "Otro"], horizontal=True, key="dia_car")
     with col_hora:
-        tiempo = st.radio("⏱️ ¿Cuándo lo quiere?", ["Ahora", "Más tarde"], horizontal=True, key="tie_car")
+        tiempo = st.radio("⏱️ Horario:", ["Ahora", "Más tarde"], horizontal=True, key="tie_car")
         hora_entrega = st.selectbox("¿A qué hora?", obtener_horas_disponibles(), key="hor_car") if tiempo == "Más tarde" else ""
+    
+    # Cálculo de la fecha exacta de entrega
+    if dia_pedido == "Mañana":
+        fecha_final_entrega = (hoy_obj + timedelta(days=1)).strftime("%d/%m/%Y")
+    elif dia_pedido == "Otro":
+        fecha_calendario = st.date_input("Selecciona fecha:", hoy_obj + timedelta(days=2))
+        fecha_final_entrega = fecha_calendario.strftime("%d/%m/%Y")
+    else:
+        fecha_final_entrega = hoy_str
             
     st.write("### 📌 Menú:")
     for categoria, productos in MENU.items():
         with st.expander(categoria):
             col1, col2 = st.columns(2) 
             for i, (nombre, precio) in enumerate(productos.items()):
-                # Extraer nombre corto para el ticket (Ej: "Frappés" de "🥤 Frappés (Puesto)")
                 cat_corta = categoria.split(" (")[0][2:].strip()
-                nombre_completo = f"{cat_corta} {nombre}"
+                nombre_completo = f"{cat_corta} {nombre}" if "Cafetería" in categoria or "Frappés" in categoria or "Esquimos" in categoria or "Chamoyadas" in categoria else nombre
                 
                 if "(Cocina)" in categoria: destino = "Cocina"
                 elif "(Puesto - Opcional)" in categoria: destino = "Puesto_Opcional"
                 elif "(Puesto)" in categoria: destino = "Puesto"
-                else: destino = "Directo"
+                else: destino = "Directo" # Las tortas ahora caen aquí
                 
                 target_col = col1 if i % 2 == 0 else col2
                 with target_col:
@@ -132,6 +157,8 @@ with tab1:
                         st.toast(f"✅ Agregado: {nombre_completo}")
 
     st.divider()
+    
+    # ZONA DE PAGO Y ENVÍO
     if len(st.session_state.ticket_carrito) > 0:
         st.subheader("🧾 Tu Ticket:")
         total = 0
@@ -163,36 +190,40 @@ with tab1:
                         ws_ops = sh.worksheet("Operaciones")
                         hora_registro = str(datetime.now(zona_mx).strftime("%H:%M:%S"))
                         hora_final = hora_registro if tiempo == "Ahora" else str(hora_entrega)
-                        
                         detalles_ticket = []
+                        
                         for item in st.session_state.ticket_carrito:
                             destino_real = item['destino_final']
                             estado = "Entregado" if destino_real == "Directo" else "Preparando"
-                            ws_ops.append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0])
+                            # Se agregan 9 elementos (la Fecha de entrega va al final, columna I)
+                            ws_ops.append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0, fecha_final_entrega])
                             detalles_ticket.append(item['producto'])
                         
                         if pago == "Pendiente / Fiado":
                             resumen_productos = ", ".join(detalles_ticket)
                             sh.worksheet("Deudas").append_row([cliente, "Deuda", total, resumen_productos, hora_final])
                             
+                        # Limpiar Memoria y TextBoxes para el siguiente cliente
                         st.session_state.ticket_carrito = []
+                        st.session_state.cli_car = "Mostrador"
+                        st.session_state.tie_car = "Ahora"
+                        st.session_state.dia_car = "Hoy"
                         st.success("¡Pedido registrado con éxito!")
                         st.rerun()
                     except Exception as e: st.error(f"Error al escribir en Excel: {e}")
 
 # ==========================================
-# PESTAÑA 2: CAJA PUESTO (Bebidas exclusivas)
+# PESTAÑA 2: CAJA PUESTO (Solo Bebidas)
 # ==========================================
 with tab2:
     st.title("🥤 Caja Puesto")
     col_nom_p, col_hora_p = st.columns(2)
     with col_nom_p: cliente_p = st.text_input("👤 Cliente:", value="Mostrador", key="cli_pue")
     with col_hora_p:
-        tiempo_p = st.radio("⏱️ ¿Cuándo lo quiere?", ["Ahora", "Más tarde"], horizontal=True, key="tie_pue")
+        tiempo_p = st.radio("⏱️ Horario:", ["Ahora", "Más tarde"], horizontal=True, key="tie_pue")
         hora_entrega_p = st.selectbox("¿A qué hora?", obtener_horas_disponibles(), key="hor_pue") if tiempo_p == "Más tarde" else ""
 
     categorias_puesto = ["🏪 Cafetería Completa (Puesto)", "🥤 Frappés (Puesto - Opcional)", "🥛 Esquimos (Puesto - Opcional)", "🍧 Chamoyadas (Puesto - Opcional)"]
-    
     st.write("### 📌 Menú de Bebidas:")
     for categoria in categorias_puesto:
         if categoria in MENU:
@@ -201,7 +232,6 @@ with tab2:
                 for i, (nombre, precio) in enumerate(MENU[categoria].items()):
                     cat_corta = categoria.split(" (")[0][2:].strip()
                     nombre_completo = f"{cat_corta} {nombre}"
-                    
                     target_col = col1 if i % 2 == 0 else col2
                     with target_col:
                         if st.button(f"{nombre}\n${precio}", use_container_width=True, key=f"btn_p_{nombre}_{categoria}"):
@@ -237,7 +267,8 @@ with tab2:
                         detalles_ticket = []
                         
                         for item in st.session_state.ticket_puesto:
-                            ws_ops.append_row([cliente_p, item['producto'], "Directo", item['notas'], tiempo_p, hora_final, "Entregado", total_p if item == st.session_state.ticket_puesto[0] else 0])
+                            # Igual, mandamos con Fecha de HOY (Columna I)
+                            ws_ops.append_row([cliente_p, item['producto'], "Directo", item['notas'], tiempo_p, hora_final, "Entregado", total_p if item == st.session_state.ticket_puesto[0] else 0, hoy_str])
                             detalles_ticket.append(item['producto'])
                         
                         if pago_p == "Pendiente / Fiado":
@@ -253,12 +284,33 @@ with tab2:
 # MONITORES DE COCINA Y LISTOS
 # ==========================================
 with tab4:
-    st.header("🍳 COCINA (Platillos y Tortas)")
+    st.header("🍳 COCINA (Platillos)")
     mostrar_pedidos("Cocina", "Preparando", "Marcar Terminado", "Listo")
 
 with tab3:
-    st.header("✅ LISTOS PARA ENTREGA")
+    st.header("✅ LISTOS PARA HOY")
     mostrar_pedidos(None, "Listo", "Entregar al Cliente", "Entregado")
+
+# ==========================================
+# PESTAÑA 6: AGENDA FUTURA
+# ==========================================
+with tab6:
+    st.header("📅 Pedidos Futuros Agendados")
+    if sh:
+        try:
+            ws_ops = sh.worksheet("Operaciones")
+            datos = ws_ops.get_all_values()
+            futuros = 0
+            for i, fila in enumerate(datos[1:], start=2):
+                if len(fila) > 8:
+                    fecha_str = fila[8]
+                    # Si la fecha es distinta a hoy, asumimos que es futura
+                    if fecha_str != hoy_str and fila[6] != "Entregado":
+                        futuros += 1
+                        st.info(f"📅 **Para el: {fecha_str}** | 🕒 {fila[5]}\n\n👤 {fila[0]} ordenó: **{fila[1]}**")
+                        
+            if futuros == 0: st.success("No hay pedidos pendientes para los próximos días.")
+        except Exception as e: st.error("No se pudo leer la agenda.")
 
 # ==========================================
 # PESTAÑA 5: SISTEMA DE PAGOS
