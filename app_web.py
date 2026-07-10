@@ -59,25 +59,25 @@ MENU = {
     "🥤 Frappés (Puesto - Opcional)": {"Fresa": 65, "Taro": 65, "Chai": 65, "Matcha": 65, "Rompope": 65, "Red Velvet": 65, "Pistache": 65, "Galleta": 65, "Mora": 65, "Cereza": 65, "Refresher Darks": 65, "Cafe": 65, "Moka": 65, "Oreo": 65, "Chocolate": 65},
     "🥛 Esquimos (Puesto - Opcional)": {"Fresa": 45, "Taro": 45, "Chai": 45, "Matcha": 45, "Rompope": 45, "Red Velvet": 45, "Pistache": 45, "Galleta": 45, "Mora": 45, "Cereza": 45, "Refresher Darks": 45, "Cafe": 45, "Moka": 45, "Oreo": 45, "Chocolate": 45},
     "🍧 Chamoyadas (Puesto - Opcional)": {"Fresa": 65, "Mango": 65, "Temporada": 65}
-    
 }
 
-# --- LECTURA ÚNICA DE DATOS ---
-datos_ops_global = []
-datos_inv_global = []
-dict_inventario = {}
+# --- LECTURA OPTIMIZADA CON CACHÉ (ANTI-BLOQUEOS 429) ---
+@st.cache_data(ttl=3)
+def leer_base_datos():
+    ops, inv, deu = [], [], []
+    if sh:
+        try:
+            ops = sh.worksheet("Operaciones").get_all_values()
+            inv = sh.worksheet("Inventario").get_all_records()
+            deu = sh.worksheet("Deudas").get_all_records()
+        except: pass
+    return ops, inv, deu
 
-if sh:
-    try:
-        ws_ops = sh.worksheet("Operaciones")
-        datos_ops_global = ws_ops.get_all_values()
-        
-        ws_inv = sh.worksheet("Inventario")
-        datos_inv_global = ws_inv.get_all_records()
-        for fila in datos_inv_global:
-            dict_inventario[fila["Producto"]] = int(fila["Stock"])
-    except:
-        pass
+datos_ops_global, datos_inv_global, datos_deudas_global = leer_base_datos()
+
+dict_inventario = {}
+for fila in datos_inv_global:
+    dict_inventario[fila["Producto"]] = int(fila["Stock"])
 
 # --- FUNCIÓN MAESTRA DE MONITORES ---
 def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
@@ -114,6 +114,7 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
                         st.write("")
                         if st.button(f"{texto_boton} ✅", key=f"btn_{i}_{estado}"):
                             ws_ops_local.update_cell(i, 7, nuevo_estado)
+                            leer_base_datos.clear() # Refresca datos tras marcar como listo
                             st.rerun()
                 st.divider()
         if mostrados == 0: st.info("ERES LIBRE DE SENTARTE.")
@@ -211,7 +212,6 @@ with tab1:
             with c3:
                 item['notas'] = st.text_input("Notas:", key=f"nota_c_{f_actual}_{index}", label_visibility="collapsed", placeholder="Detalles...")
                 
-                # --- AQUÍ ESTÁ EL AJUSTE EXACTO ---
                 # Ahora tanto las Opcionales como las de Puesto se mandan a Cocina
                 if item['destino'] == "Puesto_Opcional" or item['destino'] == "Puesto":
                     preparar = st.checkbox("Enviar a Cocina", key=f"prep_c_{f_actual}_{index}")
@@ -239,7 +239,7 @@ with tab1:
                         for item in st.session_state.ticket_carrito:
                             destino_real = item['destino_final']
                             estado = "Entregado" if destino_real == "Directo" else "Preparando"
-                            ws_ops.append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0, fecha_final_entrega])
+                            sh.worksheet("Operaciones").append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0, fecha_final_entrega])
                             detalles_ticket.append(item['producto'])
                         
                         if pago == "Pendiente":
@@ -256,6 +256,7 @@ with tab1:
 
                         st.session_state.ticket_carrito = []
                         st.session_state.folio += 1 
+                        leer_base_datos.clear() # Refresca datos tras pedir
                         st.success("¡Pedido registrado con éxito!")
                         st.rerun()
                     except Exception as e: st.error(f"Error al escribir en Excel: {e}")
@@ -335,7 +336,7 @@ with tab2:
                         detalles_ticket = []
                         
                         for item in st.session_state.ticket_puesto:
-                            ws_ops.append_row([cliente_p, item['producto'], "Directo", item['notas'], tiempo_p, hora_final, "Entregado", total_p if item == st.session_state.ticket_puesto[0] else 0, hoy_str])
+                            sh.worksheet("Operaciones").append_row([cliente_p, item['producto'], "Directo", item['notas'], tiempo_p, hora_final, "Entregado", total_p if item == st.session_state.ticket_puesto[0] else 0, hoy_str])
                             detalles_ticket.append(item['producto'])
                         
                         if pago_p == "Pendiente / Fiado":
@@ -343,6 +344,7 @@ with tab2:
                             sh.worksheet("Deudas").append_row([cliente_p, "Deuda", total_p, resumen_productos, hora_final])
                             
                         st.session_state.ticket_puesto = []
+                        leer_base_datos.clear() # Refresca datos tras cobrar
                         st.success("¡Cobro registrado con éxito!")
                         st.rerun()
                     except Exception as e: st.error(f"Error al escribir: {e}")
@@ -382,10 +384,8 @@ with tab5:
     st.header("Pagos y Deudas")
     if sh:
         try:
-            ws_deudas = sh.worksheet("Deudas")
-            datos_deudas = ws_deudas.get_all_records()
             clientes = {}
-            for fila in datos_deudas:
+            for fila in datos_deudas_global:
                 c = fila.get("Cliente", "Desconocido")
                 if c not in clientes: clientes[c] = {"total": 0, "historial": []}
                 monto = float(fila.get("Monto", 0))
@@ -413,8 +413,9 @@ with tab5:
                             if st.button("Registrar Pago", key=f"pagar_{c}", use_container_width=True):
                                 if abono_input > 0:
                                     detalle_abono = "Liquidación total" if abono_input == saldo else "Abono parcial"
-                                    hora_abono = str(datetime.now(zona_mx).strftime("%H:%M"))
-                                    ws_deudas.append_row([c, "Abono", abono_input, detalle_abono, hora_abono])
+                                    hora_abono = str(datetime.now(zona_mx).strftime("%d/%m/%Y %H:%M"))
+                                    sh.worksheet("Deudas").append_row([c, "Abono", abono_input, detalle_abono, hora_abono])
+                                    leer_base_datos.clear() # Refresca datos tras pagar
                                     st.success(f"Pago de ${abono_input} registrado.")
                                     st.rerun()
             if not hay_deudores: st.success("¡Todo está pagado! No hay deudas activas.")
@@ -437,6 +438,7 @@ with tab7:
             if st.form_submit_button("💾 Guardar Inventario", type="primary"):
                 for idx, val in nuevos_valores.items():
                     sh.worksheet("Inventario").update_cell(idx, 2, val)
+                leer_base_datos.clear() # Refresca datos tras actualizar stock
                 st.success("¡Inventario actualizado correctamente!")
                 st.rerun()
     else:
