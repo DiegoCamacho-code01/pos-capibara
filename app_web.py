@@ -49,16 +49,17 @@ def obtener_horas_disponibles():
         siguiente_hora += timedelta(minutes=30)
     return horas
 
-# --- EL MENÚ ---
+# --- EL MENÚ ACTUALIZADO ---
 MENU = {
     "☕ Café (Carrito - Directo)": {"Cafe Vainilla": 25, "Cafe Avellana": 25, "Café": 25},
+    "🥪 Tortas (Carrito - Directo)": {"Jamón": 25, "Queso de puerco": 25, "Milanesa de Res": 40, "Milanesa de Pollo": 40, "Salchicha": 35, "Huevo": 35, "Huevo c/ Jamón": 35, "Cochinita": 40, "Frijoles con queso": 25},
+    "🥗 Platillos (Cocina)": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 50, "Torta de Chilaquiles": 40},
     "🏪 Cafetería Completa (Puesto)": {"Americano Caliente": 30, "Americano Frio": 35, "Moka Caliente": 35, "Moka Frio": 40, "Latte Vainilla Cal.": 40, "Latte Vainilla Frio": 45, "Latte Fresa Cal.": 40, "Latte Fresa Frio": 45, "Cafe c/Leche Cal.": 35, "Cafe c/Leche Frio": 40},
     "🍞 Pan (Carrito - Directo)": {"Pan Dulce": 25, "Pan Telera": 5},
     "🥤 Frappés (Puesto - Opcional)": {"Fresa": 65, "Taro": 65, "Chai": 65, "Matcha": 65, "Rompope": 65, "Red Velvet": 65, "Pistache": 65, "Galleta": 65, "Mora": 65, "Cereza": 65, "Refresher Darks": 65, "Cafe": 65, "Moka": 65, "Oreo": 65, "Chocolate": 65},
     "🥛 Esquimos (Puesto - Opcional)": {"Fresa": 45, "Taro": 45, "Chai": 45, "Matcha": 45, "Rompope": 45, "Red Velvet": 45, "Pistache": 45, "Galleta": 45, "Mora": 45, "Cereza": 45, "Refresher Darks": 45, "Cafe": 45, "Moka": 45, "Oreo": 45, "Chocolate": 45},
-    "🍧 Chamoyadas (Puesto - Opcional)": {"Fresa": 65, "Mango": 65, "Temporada": 65},
-    "🥪 Tortas (Carrito - Directo)": {"Jamon": 25, "Queso de puerco": 25, "Milanesa de Res": 40, "Milanesa de Pollo": 40, "Salchicha": 35, "Huevo": 35, "Huevo c/ Jamón": 35, "Cochinita": 40, "frijoles con queso": 25},
-    "🥗 Platillos (Cocina)": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 50, "Torta de Chilaquiles": 40}
+    "🍧 Chamoyadas (Puesto - Opcional)": {"Fresa": 65, "Mango": 65, "Temporada": 65}
+    
 }
 
 # --- LECTURA ÚNICA DE DATOS ---
@@ -178,7 +179,7 @@ with tab1:
                         st.toast(f"✅ Agregado: {nombre_completo}")
 
     # --- APARTADO EXTRA EN EL CARRITO ---
-    with st.expander("✨ ➕ AGREGAR IMPORTE / EXTRA PERSONALIZADO"):
+    with st.expander(" ➕ AGREGAR IMPORTE / EXTRA PERSONALIZADO"):
         col_motivo, col_monto = st.columns([3, 1])
         with col_motivo:
             motivo_extra = st.text_input("Motivo del extra (ej. Ingrediente extra, Envío, Ajuste):", key=f"motivo_ext_{f_actual}")
@@ -209,15 +210,18 @@ with tab1:
             with c2: st.write(f"${item['precio']}")
             with c3:
                 item['notas'] = st.text_input("Notas:", key=f"nota_c_{f_actual}_{index}", label_visibility="collapsed", placeholder="Detalles...")
-                if item['destino'] == "Puesto_Opcional":
-                    preparar = st.checkbox("Enviar a Puesto", key=f"prep_c_{f_actual}_{index}")
-                    item['destino_final'] = "Puesto" if preparar else "Directo"
+                
+                # --- AQUÍ ESTÁ EL AJUSTE EXACTO ---
+                # Ahora tanto las Opcionales como las de Puesto se mandan a Cocina
+                if item['destino'] == "Puesto_Opcional" or item['destino'] == "Puesto":
+                    preparar = st.checkbox("Enviar a Cocina", key=f"prep_c_{f_actual}_{index}")
+                    item['destino_final'] = "Cocina" if preparar else "Directo"
                 else:
                     item['destino_final'] = item['destino']
             total += item['precio']
             
         st.write(f"### 💰 Total: ${total}")
-        pago = st.radio("💵 Estado del Pago:", ["Pagado Completo", "Pendiente / Fiado"], horizontal=True, key=f"pag_{f_actual}")
+        pago = st.radio("💵 Estado del Pago:", ["Pagado", "Pendiente"], horizontal=True, key=f"pag_{f_actual}")
         
         col_borrar, col_cobrar = st.columns(2)
         with col_borrar:
@@ -225,11 +229,11 @@ with tab1:
                 st.session_state.ticket_carrito = []
                 st.rerun()
         with col_cobrar:
-            if st.button("🚀 ENVIAR PEDIDO", type="primary", use_container_width=True):
+            if st.button("ENVIAR PEDIDO", type="primary", use_container_width=True):
                 if sh:
                     try:
-                        hora_registro = str(datetime.now(zona_mx).strftime("%H:%M:%S"))
-                        hora_final = hora_registro if tiempo == "Ahora" else str(hora_entrega)
+                        hora_registro = str(datetime.now(zona_mx).strftime("%d/%m/%Y %H:%M"))
+                        hora_final = hora_registro if tiempo == "Ahora" else f"{fecha_final_entrega} {hora_entrega}"
                         detalles_ticket = []
                         
                         for item in st.session_state.ticket_carrito:
@@ -238,7 +242,7 @@ with tab1:
                             ws_ops.append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0, fecha_final_entrega])
                             detalles_ticket.append(item['producto'])
                         
-                        if pago == "Pendiente / Fiado":
+                        if pago == "Pendiente":
                             resumen_productos = ", ".join(detalles_ticket)
                             sh.worksheet("Deudas").append_row([cliente, "Deuda", total, resumen_productos, hora_final])
                             
@@ -283,7 +287,7 @@ with tab2:
                             st.toast(f"✅ Agregado: {nombre_completo}")
                             
     # --- APARTADO EXTRA EN EL PUESTO ---
-    with st.expander("✨ ➕ AGREGAR IMPORTE / EXTRA PERSONALIZADO"):
+    with st.expander(" ➕ AGREGAR IMPORTE / EXTRA PERSONALIZADO"):
         col_motivo_p, col_monto_p = st.columns([3, 1])
         with col_motivo_p:
             motivo_extra_p = st.text_input("Motivo del extra (ej. Carga extra, Vaso especial):", key="motivo_ext_p")
@@ -323,7 +327,7 @@ with tab2:
                 st.session_state.ticket_puesto = []
                 st.rerun()
         with col_cobrar_p:
-            if st.button("🚀 COBRAR Y ENTREGAR", type="primary", use_container_width=True, key="enviar_p"):
+            if st.button("COBRAR Y ENTREGAR", type="primary", use_container_width=True, key="enviar_p"):
                 if sh:
                     try:
                         hora_registro = str(datetime.now(zona_mx).strftime("%H:%M:%S"))
@@ -351,14 +355,14 @@ with tab4:
     mostrar_pedidos("Cocina", "Preparando", "Marcar Terminado", "Listo")
 
 with tab3:
-    st.header("✅ LISTOS PARA HOY")
+    st.header("✅ LISTOS PARA ENTREGA HOY")
     mostrar_pedidos(None, "Listo", "Entregar al Cliente", "Entregado")
 
 # ==========================================
 # PESTAÑA 6: AGENDA FUTURA
 # ==========================================
 with tab6:
-    st.header("📅 Pedidos Futuros Agendados")
+    st.header("📅 Pedidos Agendados")
     if len(datos_ops_global) > 1:
         futuros = 0
         for i, fila in enumerate(datos_ops_global[1:], start=2):
@@ -375,7 +379,7 @@ with tab6:
 # PESTAÑA 5: SISTEMA DE PAGOS
 # ==========================================
 with tab5:
-    st.header("📓 Libreta de Pagos y Deudas")
+    st.header(" Pagos y Deudas")
     if sh:
         try:
             ws_deudas = sh.worksheet("Deudas")
