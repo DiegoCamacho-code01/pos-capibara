@@ -330,8 +330,8 @@ with tab2:
             if st.button("COBRAR Y ENTREGAR", type="primary", use_container_width=True, key="enviar_p"):
                 if sh:
                     try:
-                        hora_registro = str(datetime.now(zona_mx).strftime("%H:%M:%S"))
-                        hora_final = hora_registro if tiempo_p == "Ahora" else str(hora_entrega_p)
+                        hora_registro = str(datetime.now(zona_mx).strftime("%d/%m/%Y %H:%M"))
+                        hora_final = hora_registro if tiempo_p == "Ahora" else f"{hoy_str} {hora_entrega_p}"
                         detalles_ticket = []
                         
                         for item in st.session_state.ticket_puesto:
@@ -379,7 +379,7 @@ with tab6:
 # PESTAÑA 5: SISTEMA DE PAGOS
 # ==========================================
 with tab5:
-    st.header(" Pagos y Deudas")
+    st.header("Pagos y Deudas")
     if sh:
         try:
             ws_deudas = sh.worksheet("Deudas")
@@ -413,7 +413,7 @@ with tab5:
                             if st.button("Registrar Pago", key=f"pagar_{c}", use_container_width=True):
                                 if abono_input > 0:
                                     detalle_abono = "Liquidación total" if abono_input == saldo else "Abono parcial"
-                                    hora_abono = str(datetime.now(zona_mx).strftime("%H:%M:%S"))
+                                    hora_abono = str(datetime.now(zona_mx).strftime("%H:%M"))
                                     ws_deudas.append_row([c, "Abono", abono_input, detalle_abono, hora_abono])
                                     st.success(f"Pago de ${abono_input} registrado.")
                                     st.rerun()
