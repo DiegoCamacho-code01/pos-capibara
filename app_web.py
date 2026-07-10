@@ -116,7 +116,7 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
                             ws_ops_local.update_cell(i, 7, nuevo_estado)
                             st.rerun()
                 st.divider()
-        if mostrados == 0: st.info("No hay tickets pendientes para hoy en esta área.")
+        if mostrados == 0: st.info("ERES LIBRE DE SENTARTE.")
     except Exception as e:
         st.error(f"Error al actualizar monitor: {e}")
 
@@ -127,7 +127,7 @@ tab1, tab2, tab3, tab4, tab6, tab5, tab7 = st.tabs(["🛒 Carrito", "🥤 Puesto
 # PESTAÑA 1: EL CARRITO PRINCIPAL
 # ==========================================
 with tab1:
-    st.title("🛒 Carrito Principal")
+    st.title("🛒 Carrito")
     f_actual = st.session_state.folio 
     
     col_nom, col_dia, col_hora = st.columns([2, 1.5, 1.5])
