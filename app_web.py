@@ -1,26 +1,18 @@
 import streamlit as st
 import gspread
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CONFIGURACIÓN DE PÁGINA Y CSS ---
 st.set_page_config(page_title="POS Capibara", layout="centered")
 
 st.markdown("""
 <style>
-    div.stButton > button {
-        height: 70px; border-radius: 12px; border: 2px solid #0073E6; 
-        font-weight: bold; background-color: #E6F2FF; color: #002244;
-    }
+    div.stButton > button { height: 70px; border-radius: 12px; border: 2px solid #0073E6; font-weight: bold; background-color: #E6F2FF; color: #002244; }
     div.stButton > button:active { background-color: #99CCFF; transform: scale(0.95); }
     div.stButton > button[kind="primary"] { background-color: #0073E6; color: white; border: none; }
     .st-tabs { font-size: 18px; font-weight: bold; }
-    .streamlit-expanderHeader {
-        font-size: 18px !important;
-        font-weight: bold !important;
-        background-color: #262730;
-        border-radius: 8px;
-    }
+    .streamlit-expanderHeader { font-size: 18px !important; font-weight: bold !important; background-color: #262730; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -30,8 +22,7 @@ def conectar_sheets():
     try:
         credenciales = json.loads(st.secrets["google_credentials"], strict=False)
         gc = gspread.service_account_from_dict(credenciales)
-        sh = gc.open("Base_POS")
-        return sh
+        return gc.open("Base_POS")
     except Exception as e:
         st.error(f"⚠️ Error de conexión: {e}")
         return None
@@ -39,36 +30,29 @@ def conectar_sheets():
 sh = conectar_sheets()
 
 # --- MEMORIA DEL CARRITO TEMPORAL ---
-if 'ticket' not in st.session_state:
-    st.session_state.ticket = []
+if 'ticket' not in st.session_state: st.session_state.ticket = []
 
-# --- EL MENÚ CAPIBARA REESTRUCTURADO ---
+# --- GENERADOR DE HORAS (De 30 en 30 min) ---
+def obtener_horas_disponibles():
+    ahora = datetime.now()
+    minutos_extra = 30 - (ahora.minute % 30)
+    siguiente_hora = ahora + timedelta(minutes=minutos_extra)
+    horas = []
+    for _ in range(8): # Muestra las próximas 4 horas
+        horas.append(siguiente_hora.strftime("%H:%M"))
+        siguiente_hora += timedelta(minutes=30)
+    return horas
+
+# --- EL MENÚ ACTUALIZADO ---
 MENU = {
-    "☕ Café Básico (Carrito - Directo)": {
-        "Cafe": 20, "Cafe vainilla": 20, "Café avellana": 20
-    },
-    "🏪 Cafetería Completa (Puesto)": {
-        "Mocha Caliente": 35, "Mocha Frio": 40, "Latte Vainilla Cal.": 40, "Latte Vainilla Frio": 45, 
-        "Latte Fresa Cal.": 40, "Latte Fresa Frio": 45, "Cafe c/Leche Cal.": 35, "Cafe c/Leche Frio": 40
-    },
-    "🍞 Pan (Carrito - Directo)": {
-        "Concha": 15, "Oreja": 12, "Mantecada": 14
-    },
-    "🥤 Frappés (Puesto)": {
-        "Fresa": 65, "Taro": 65, "Chai": 65, "Matcha": 65, "Rompope": 65, "Red Velvet": 65, "Pistache": 65, "Galleta": 65, "Mora": 65, "Cereza": 65
-    },
-    "🥛 Esquimos (Puesto)": {
-        "Fresa": 45, "Mocha": 45, "Cafe": 45, "Nuez": 45, "Chocolate": 45, "Rompope": 45, "Vainilla": 45
-    },
-    "🍧 Chamoyadas (Puesto)": {
-        "Fresa": 65, "Mango": 65, "Temporada": 65, "Refresher Darks": 65, "+ Bolitas Explosivas": 10
-    },
-    "🥪 Tortas (Cocina)": {
-        "Cubana": 65, "Milanesa de Res": 40, "Milanesa de Pollo": 40, "Salchicha": 35, "Huevo": 35, "Huevo c/ Jamón": 35, "Chilaquiles": 40
-    },
-    "🥗 Platillos (Cocina)": {
-        "Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 55
-    }
+    "☕ Café Básico (Carrito - Directo)": {"Americano Caliente": 30, "Americano Frio": 35, "Café de Olla": 25},
+    "🏪 Cafetería Completa (Puesto)": {"Mocha Caliente": 35, "Mocha Frio": 40, "Latte Vainilla Cal.": 40, "Latte Vainilla Frio": 45, "Latte Fresa Cal.": 40, "Latte Fresa Frio": 45, "Cafe c/Leche Cal.": 35, "Cafe c/Leche Frio": 40},
+    "🍞 Pan (Carrito - Directo)": {"Concha": 15, "Oreja": 12, "Mantecada": 14},
+    "🥤 Frappés (Puesto - Opcional)": {"Fresa": 65, "Taro": 65, "Chai": 65, "Matcha": 65, "Rompope": 65, "Red Velvet": 65, "Pistache": 65, "Galleta": 65, "Mora": 65, "Cereza": 65},
+    "🥛 Esquimos (Puesto - Opcional)": {"Fresa": 45, "Mocha": 45, "Cafe": 45, "Nuez": 45, "Chocolate": 45, "Rompope": 45, "Vainilla": 45},
+    "🍧 Chamoyadas (Puesto - Opcional)": {"Fresa": 65, "Mango": 65, "Temporada": 65, "Refresher Darks": 65, "+ Bolitas Explosivas": 10},
+    "🥪 Tortas (Cocina)": {"Cubana": 65, "Milanesa de Res": 40, "Milanesa de Pollo": 40, "Salchicha": 35, "Huevo": 35, "Huevo c/ Jamón": 35},
+    "🥗 Platillos (Cocina)": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 55, "Torta de Chilaquiles": 40}
 }
 
 # --- FUNCIÓN MAESTRA DE MONITORES ---
@@ -76,27 +60,20 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
     if not sh: return
     try:
         ws_ops = sh.worksheet("Operaciones")
-        datos = ws_ops.get_all_values() # Trae todo como listas
-        
+        datos = ws_ops.get_all_values()
         if len(datos) <= 1:
             st.info("Todo tranquilo por aquí. 😎")
             return
-            
         mostrados = 0
-        # Empezamos desde la fila 2 (índice 1 en la lista) porque la 1 son los encabezados
         for i, fila in enumerate(datos[1:], start=2):
-            if len(fila) < 7: continue # Por si hay filas en blanco
-            
+            if len(fila) < 7: continue
             cliente, producto, destino, notas, tiempo, hora, estado = fila[0], fila[1], fila[2], fila[3], fila[4], fila[5], fila[6]
             
-            # Filtro lógico
             mostrar = False
-            if destino_filtro: # Si estamos en Cocina o Puesto
-                if destino == destino_filtro and estado == estado_actual:
-                    mostrar = True
-            else: # Si estamos en la pestaña "Listos" (no importa de dónde venga, solo que esté listo)
-                if estado == estado_actual:
-                    mostrar = True
+            if destino_filtro: 
+                if destino == destino_filtro and estado == estado_actual: mostrar = True
+            else: 
+                if estado == estado_actual: mostrar = True
 
             if mostrar:
                 mostrados += 1
@@ -105,21 +82,16 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado):
                     with col_info:
                         st.markdown(f"### 🛒 {producto}")
                         st.write(f"👤 **Cliente:** {cliente} | 🕒 **Hora:** {hora}")
-                        if notas:
-                            st.warning(f"📝 **Notas:** {notas}")
+                        if notas: st.warning(f"📝 **Notas:** {notas}")
                     with col_btn:
-                        st.write("") # Espaciador
+                        st.write("")
                         if st.button(f"{texto_boton} ✅", key=f"btn_{i}_{estado}"):
-                            # 7 es el número de la columna G (Estado) en Sheets
                             ws_ops.update_cell(i, 7, nuevo_estado)
                             st.rerun()
                 st.divider()
-                
-        if mostrados == 0:
-            st.info("No hay tickets pendientes en esta área. ☕")
-            
+        if mostrados == 0: st.info("No hay tickets pendientes en esta área. ☕")
     except Exception as e:
-        st.error(f"Faltan los encabezados en el Excel o hubo un error: {e}")
+        st.error(f"Error de lectura: {e}")
 
 # --- LAS 5 PESTAÑAS DE OPERACIÓN ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛒 Carrito", "🥤 Puesto", "✅ Listos", "🍳 Cocina", "📓 Pagos"])
@@ -129,20 +101,23 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛒 Carrito", "🥤 Puesto", "✅ List
 # ==========================================
 with tab1:
     st.title("🛒 Punto de Venta")
-    if not sh: st.warning("⚠️ Sin conexión a Google Sheets.")
-        
     col_nom, col_hora = st.columns(2)
-    with col_nom: cliente = st.text_input("👤 Cliente (Opcional):", value="Mostrador")
+    with col_nom: cliente = st.text_input("👤 Cliente (Obligatorio para deudas):", value="Mostrador")
     with col_hora:
         tiempo = st.radio("⏱️ ¿Cuándo lo quiere?", ["Ahora", "Más tarde"], horizontal=True)
-        hora_entrega = st.time_input("¿A qué hora?") if tiempo == "Más tarde" else ""
+        hora_entrega = st.selectbox("¿A qué hora?", obtener_horas_disponibles()) if tiempo == "Más tarde" else ""
             
-    st.write("### 📌 Selecciona los productos:")
+    st.write("### 📌 Menú:")
     for categoria, productos in MENU.items():
         with st.expander(categoria):
             col1, col2 = st.columns(2) 
             for i, (nombre, precio) in enumerate(productos.items()):
-                destino = "Cocina" if "(Cocina)" in categoria else "Puesto" if "(Puesto)" in categoria else "Directo"
+                # Lógica de ruteo
+                if "(Cocina)" in categoria: destino = "Cocina"
+                elif "(Puesto - Opcional)" in categoria: destino = "Puesto_Opcional"
+                elif "(Puesto)" in categoria: destino = "Puesto"
+                else: destino = "Directo"
+                
                 target_col = col1 if i % 2 == 0 else col2
                 with target_col:
                     if st.button(f"{nombre}\n${precio}", use_container_width=True, key=f"btn_{nombre}_{categoria}"):
@@ -158,7 +133,13 @@ with tab1:
             with c1: st.write(f"▪️ {item['producto']}")
             with c2: st.write(f"${item['precio']}")
             with c3:
-                if item['destino'] == "Cocina": item['notas'] = st.text_input("Detalles (ej. Sin cebolla):", key=f"nota_{index}")
+                # Notas y Botón Opcional de Preparación
+                item['notas'] = st.text_input("Notas:", key=f"nota_{index}", label_visibility="collapsed", placeholder="Detalles...")
+                if item['destino'] == "Puesto_Opcional":
+                    preparar = st.checkbox("Mandar a preparación", key=f"prep_{index}")
+                    item['destino_final'] = "Puesto" if preparar else "Directo"
+                else:
+                    item['destino_final'] = item['destino']
             total += item['precio']
             
         st.write(f"### 💰 Total: ${total}")
@@ -177,18 +158,22 @@ with tab1:
                         hora_registro = str(datetime.now().strftime("%H:%M:%S"))
                         hora_final = hora_registro if tiempo == "Ahora" else str(hora_entrega)
                         
+                        detalles_ticket = []
                         for item in st.session_state.ticket:
-                            estado = "Entregado" if item['destino'] == "Directo" else "Preparando"
+                            destino_real = item['destino_final']
+                            estado = "Entregado" if destino_real == "Directo" else "Preparando"
                             ws_ops.append_row([
-                                cliente, item['producto'], item['destino'], item['notas'], 
+                                cliente, item['producto'], destino_real, item['notas'], 
                                 tiempo, hora_final, estado, total if item == st.session_state.ticket[0] else 0
                             ])
+                            detalles_ticket.append(item['producto'])
                         
                         if pago == "Pendiente / Fiado":
-                            sh.worksheet("Deudas").append_row([cliente, total, hora_registro])
+                            resumen_productos = ", ".join(detalles_ticket)
+                            sh.worksheet("Deudas").append_row([cliente, "Deuda", total, resumen_productos, hora_final])
                             
                         st.session_state.ticket = []
-                        st.success("¡Pedido registrado en la nube con éxito!")
+                        st.success("¡Pedido registrado con éxito!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error al escribir en Excel: {e}")
@@ -197,24 +182,68 @@ with tab1:
 # MONITORES DE COCINA Y PUESTO
 # ==========================================
 with tab2:
-    st.header("🥤 PUESTO (Frappés y Cafetería)")
-    # Muestra lo que va al Puesto y está Preparando. Botón cambia a Listo.
+    st.header("🥤 PUESTO (Cafetería y Preparación)")
     mostrar_pedidos("Puesto", "Preparando", "Marcar Terminado", "Listo")
 
 with tab4:
-    st.header("🍳 COCINA (Comida Caliente)")
-    # Muestra lo que va a Cocina y está Preparando. Botón cambia a Listo.
+    st.header("🍳 COCINA (Platillos y Tortas)")
     mostrar_pedidos("Cocina", "Preparando", "Marcar Terminado", "Listo")
 
 with tab3:
     st.header("✅ LISTOS PARA ENTREGA")
-    # Muestra todo lo que diga Listo. Botón cambia a Entregado.
     mostrar_pedidos(None, "Listo", "Entregar al Cliente", "Entregado")
 
+# ==========================================
+# PESTAÑA 5: SISTEMA DE PAGOS Y DEUDAS INTELIGENTE
+# ==========================================
 with tab5:
     st.header("📓 Libreta de Pagos y Deudas")
     if sh:
         try:
-            st.dataframe(sh.worksheet("Deudas").get_all_records())
-        except:
-            st.write("Aún no hay datos u ocurrió un error al leer Deudas.")
+            ws_deudas = sh.worksheet("Deudas")
+            datos_deudas = ws_deudas.get_all_records()
+            
+            # Agrupar datos por cliente
+            clientes = {}
+            for fila in datos_deudas:
+                c = fila.get("Cliente", "Desconocido")
+                if c not in clientes: clientes[c] = {"total": 0, "historial": []}
+                
+                monto = float(fila.get("Monto", 0))
+                if fila.get("Tipo") == "Deuda":
+                    clientes[c]["total"] += monto
+                else:
+                    clientes[c]["total"] -= monto
+                clientes[c]["historial"].append(fila)
+            
+            hay_deudores = False
+            for c, info in clientes.items():
+                saldo = round(info["total"], 2)
+                if saldo > 0:
+                    hay_deudores = True
+                    with st.expander(f"👤 {c} - Debe: ${saldo}"):
+                        st.write("**Historial de consumo:**")
+                        for h in info["historial"]:
+                            tipo = "🔴 Ticket" if h["Tipo"] == "Deuda" else "🟢 Abono"
+                            st.write(f"{tipo}: **${h['Monto']}** ({h['Fecha']}) - *{h['Detalles']}*")
+                        
+                        st.divider()
+                        col_abono, col_btn = st.columns(2)
+                        with col_abono:
+                            abono_input = st.number_input(f"Abonar cantidad para {c}", min_value=0.0, max_value=float(saldo), value=float(saldo), key=f"num_{c}")
+                        with col_btn:
+                            st.write("")
+                            st.write("")
+                            if st.button("Registrar Pago", key=f"pagar_{c}", use_container_width=True):
+                                if abono_input > 0:
+                                    detalle_abono = "Liquidación total" if abono_input == saldo else "Abono parcial"
+                                    hora_abono = str(datetime.now().strftime("%H:%M:%S"))
+                                    ws_deudas.append_row([c, "Abono", abono_input, detalle_abono, hora_abono])
+                                    st.success(f"Pago de ${abono_input} registrado.")
+                                    st.rerun()
+                                    
+            if not hay_deudores:
+                st.success("¡Todo está pagado! No hay deudas activas.")
+                
+        except Exception as e:
+            st.error(f"Configura los encabezados en la hoja 'Deudas' primero.")
