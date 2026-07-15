@@ -60,7 +60,7 @@ def leer():
                 sh.worksheet("Deudas").get_all_values(),
                 sh.worksheet("Historial").get_all_values())
     except Exception as e: 
-        st.error(f"Error de lectura. Verifica que existan las hojas Operaciones, Inventario, Deudas e Historial: {e}")
+        st.error(f"Error de lectura: {e}")
         return [], [], [], []
 
 ops, inv, deu, hist = leer()
@@ -73,9 +73,10 @@ if 'cajero' not in st.session_state:
         st.session_state.cajero = st.query_params.get("u", "")
     else:
         st.title("👋 Bienvenido al Sistema")
-        st.write("Registra tu nombre para iniciar el turno (el celular lo recordará).")
+        st.write("Registra tu nombre para iniciar el turno.")
+        st.info("💡 **Tip:** Después de entrar, agrega esta página a la pantalla de inicio de tu celular. Así guardará tu nombre y no te lo volverá a pedir jamás.")
         nom = st.text_input("NOMBRE DEL CAJERO:")
-        if st.button("Entrar", type="primary"):
+        if st.button("Entrar al Sistema", type="primary"):
             if nom.strip():
                 st.query_params["u"] = nom.strip()
                 st.session_state.cajero = nom.strip()
@@ -96,7 +97,7 @@ MENU_BASE = {
     "🧊 Bebidas Frías": {"Fresa": 45, "Taro": 45, "Chai": 45, "Matcha": 45, "Rompope": 45, "Red Velvet": 45, "Pistache": 45, "Galleta": 45, "Mora": 45, "Cereza": 45, "Refresher Darks": 45, "Cafe": 45, "Moka": 45, "Oreo": 45, "Chocolate": 45},
     "🥛 Esquimos": {"Fresa": 45, "Taro": 45, "Chai": 45, "Matcha": 45, "Rompope": 45, "Red Velvet": 45, "Pistache": 45, "Galleta": 45, "Mora": 45, "Cereza": 45, "Refresher Darks": 45, "Cafe": 45, "Moka": 45, "Oreo": 45, "Chocolate": 45},
     "🍧 Chamoyadas": {"Fresa": 65, "Mango": 65, "Temporada": 65},
-    "🥗 Platillos": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 50},
+    "🥗 Platillos": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 50, "Torta de Chilaquiles": 65},
     "🍞 Pan": {"Pan de Dulce": 25, "Telera": 5}
 }
 
@@ -105,7 +106,6 @@ dict_inv = {}
 
 if len(inv) > 1:
     for row in inv[1:]:
-        # Se requiere que tenga al menos Nombre, Stock, Categoría, Precio y Estado
         if len(row) >= 5 and str(row[4]).strip().lower() == "activo":
             prod, stock_str, cat, precio_str = row[0], row[1], row[2], row[3]
             try: dict_inv[prod] = int(stock_str)
@@ -117,14 +117,6 @@ if len(inv) > 1:
 
 for c_apagada in st.session_state.cat_apagadas:
     if c_apagada in MENU: del MENU[c_apagada]
-
-# Extracción de clientes únicos para sugerencias
-clientes_historicos = []
-if len(ops) > 1:
-    clientes_historicos.extend([f[0] for f in ops[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
-if len(deu) > 1:
-    clientes_historicos.extend([f[0] for f in deu[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
-clientes_unicos = sorted(list(set(clientes_historicos)))
 
 # ==========================================
 # 5. MENÚ LATERAL Y PESTAÑAS
@@ -200,17 +192,11 @@ with tabs[0]:
         st.write(f"### 💰 Total: ${total}")
         st.divider()
         
-        # Selección de Cliente y Pago (Híbrido)
-        c_n_select, c_n_input, c_pago = st.columns([1.5, 1.5, 1])
-        with c_n_select:
-            cliente_existente = st.selectbox("👤 Buscar Cliente:", ["Nuevo / Mostrador"] + clientes_unicos)
-        with c_n_input:
-            if cliente_existente == "Nuevo / Mostrador":
-                cliente = st.text_input("Nombre (Nuevo):", placeholder="Ej. Carlos")
-            else:
-                cliente = cliente_existente
-                st.text_input("Cliente seleccionado:", value=cliente, disabled=True)
-        with c_pago:
+        # Casilla Única de Cliente
+        c_nom, c_pago = st.columns([1.5, 1])
+        with c_nom: 
+            cliente = st.text_input("👤 Cliente (Empieza a escribir para registrar o autocompletar):", placeholder="Ej. Carlos")
+        with c_pago: 
             pago = st.radio("💵 Pago", ["Pagado", "Pendiente / Fiado"], index=1, horizontal=True)
 
         c_dia, c_hora = st.columns(2)
@@ -242,6 +228,7 @@ with tabs[0]:
                     for i in st.session_state.cart:
                         dest = "Cocina" if any(x in i['prod'] for x in ["Platillo", "Frappé", "Esquimo", "Chamoyada", "Bebidas Frías", "Cafetería"]) else "Directo"
                         est = "Pendiente" if dia_tipo != "Hoy" or tiempo != "Ahora" else ("Preparando" if dest == "Cocina" else "Entregado")
+                        # AQUÍ SE GUARDA EL NOMBRE DEL CAJERO
                         sh.worksheet("Operaciones").append_row([nom_final, i['prod'], dest, i['notas'], tiempo, h_real, est, total if i == st.session_state.cart[0] else 0, fecha_fin, st.session_state.cajero])
                     
                     if pago == "Pendiente / Fiado": 
@@ -458,39 +445,51 @@ with tabs[6]:
     with st.expander("➕ Añadir Nuevo Producto (Aparecerá en el Menú)"):
         with st.form("add_inv"):
             n_prod = st.text_input("Nombre del Producto:")
-            n_cat = st.selectbox("Categoría:", ["🥪 Tortas", "🍞 Pan", "🥗 Platillos"])
+            
+            # Puedes elegir cualquier categoría del menú para agregar tu producto
+            n_cat = st.selectbox("Categoría a la que pertenece:", list(MENU.keys()))
             n_pre = st.number_input("Precio ($):", step=5.0)
-            n_stk = st.number_input("Stock Inicial (Aparecerá en el contador de hoy):", min_value=0, value=10)
-            if st.form_submit_button("Guardar en Menú e Inventario"):
+            
+            # Solo pide inventario físico si estás en la sección de Tortas
+            if "Tortas" in n_cat:
+                st.info("🥪 Has elegido Tortas. Por favor, ingresa el stock inicial:")
+                n_stk = st.number_input("Stock Inicial (Aparecerá en el contador):", min_value=0, value=10)
+            else:
+                n_stk = "" # Los demás productos no llevan conteo estricto de stock aquí
+                
+            if st.form_submit_button("Guardar Producto en el Menú"):
                 if n_prod.strip():
                     sh.worksheet("Inventario").append_row([n_prod, n_stk, n_cat, n_pre, "Activo"])
                     leer.clear()
-                    st.success(f"{n_prod} agregado exitosamente.")
+                    st.success(f"¡{n_prod} agregado exitosamente a {n_cat}!")
                     st.rerun()
                 else:
                     st.warning("El nombre es obligatorio.")
 
     st.divider()
-    st.write("Actualiza la tabla física (Cambia cantidades, precios y escribe 'Activo' en estado para que aparezcan en el menú):")
+    st.write("Actualiza el stock físico del día (Las celdas amarillas te avisarán solas en el menú):")
     
-    # Implementación de Tabla / Data Editor en el Inventario para mostrar TODO
-    if len(inv) > 0:
-        df_inv = pd.DataFrame(inv[1:], columns=inv[0])
-        # Asegurar que Stock no explote con celdas vacías en la vista
-        df_inv['Stock'] = pd.to_numeric(df_inv['Stock'], errors='coerce').fillna(0).astype(int)
-        
-        # Muestra la tabla dinámica en pantalla
-        edited_inv = st.data_editor(df_inv, num_rows="dynamic", use_container_width=True, hide_index=True)
-        
-        if st.button("💾 Guardar Cambios de Inventario"):
-            edited_inv = edited_inv.fillna("")
-            datos_nuevos = [edited_inv.columns.values.tolist()] + edited_inv.values.tolist()
-            ws_inv = sh.worksheet("Inventario")
-            ws_inv.clear()
-            ws_inv.update("A1", datos_nuevos)
-            leer.clear()
-            st.success("Inventario actualizado masivamente en Sheets.")
-            st.rerun()
+    # Vista limpia de aplicación para actualizar stock (como antes)
+    if len(inv) > 1:
+        with st.form("inv_form"):
+            cols = st.columns(3)
+            nv = {}
+            contador = 0
+            for i, f in enumerate(inv[1:], start=2):
+                if len(f) >= 5 and str(f[4]).strip().lower() == "activo" and f[1] != "":
+                    try: val = int(f[1])
+                    except: val = 0
+                    
+                    with cols[contador % 3]:
+                        nv[i] = st.number_input(f[0], value=val, min_value=0, key=f"ui_inv_{i}")
+                    contador += 1
+                    
+            if st.form_submit_button("💾 Guardar Cambios Físicos"):
+                for i, v in nv.items(): 
+                    sh.worksheet("Inventario").update_cell(i, 2, v)
+                leer.clear()
+                st.success("Inventario actualizado correctamente.")
+                st.rerun()
 
 # ==========================================
 # PESTAÑA 8: MODO ADMIN (Panel General)
@@ -499,10 +498,29 @@ if st.session_state.admin_mode:
     with tabs[7]:
         st.header("⚙️ Panel de Administración")
         
+        # --- NUEVO: RESUMEN DE VENTAS POR CAJERO ---
+        st.subheader("👥 Ventas por Cajero (Hoy)")
+        ventas_cajeros = {}
+        for f in ops[1:]:
+            # Verifica que el ticket sea de hoy, esté entregado y tenga registro de cajero
+            if len(f) > 9 and f[8] == hoy_str and f[6] == "Entregado":
+                cajero = f[9]
+                try: monto = float(f[7]) if f[7] else 0.0
+                except: monto = 0.0
+                ventas_cajeros[cajero] = ventas_cajeros.get(cajero, 0.0) + monto
+                
+        if ventas_cajeros:
+            for caj, monto in ventas_cajeros.items():
+                st.info(f"🧑‍💼 **Cajero: {caj}** ➔ Dinero cobrado: **${monto}**")
+        else:
+            st.write("Aún no hay ventas registradas finalizadas en el día de hoy.")
+            
+        st.divider()
+        
         st.subheader("🔌 Apagar Categorías")
         st.write("Si apagas una categoría aquí, desaparecerá del celular de todos inmediatamente.")
         cat_apagadas_temp = []
-        for cat_base in MENU_BASE.keys():
+        for cat_base in MENU.keys():
             encendida = st.toggle(cat_base, value=(cat_base not in st.session_state.cat_apagadas))
             if not encendida: cat_apagadas_temp.append(cat_base)
         
