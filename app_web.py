@@ -18,9 +18,8 @@ st.markdown("""
     .streamlit-expanderHeader { font-size: 18px !important; font-weight: bold !important; background-color: #262730; border-radius: 8px; }
 
     /* --- RADIOS COMO BOTONES CUADRADOS TACTILES ---
-       NOTA: los selectores dependen de la version de Streamlit (data-testid / role).
-       Si con tu version no se ve bien, inspecciona el HTML con las DevTools del
-       navegador y ajusta el selector "div[role=radiogroup] label". */
+       NOTA: los selectores dependen de la version de Streamlit. Si no se ve bien,
+       inspecciona el HTML con las DevTools del navegador y ajusta el selector. */
     div[role="radiogroup"] { flex-direction: row; flex-wrap: wrap; gap: 8px; }
     div[role="radiogroup"] label {
         border: 2px solid #0073E6 !important;
@@ -35,15 +34,13 @@ st.markdown("""
         display: flex;
         align-items: center;
     }
-    div[role="radiogroup"] label > div:first-child { display: none; } /* oculta el circulo del radio */
+    div[role="radiogroup"] label > div:first-child { display: none; }
     div[role="radiogroup"] label[aria-checked="true"] {
         background-color: #0073E6 !important;
         color: white !important;
     }
 
-    /* --- STICKY HEADER PARA LA BARRA DE CATEGORIAS ---
-       Se apoya en :has() (Chrome/Edge/Safari recientes). Si tu navegador no lo
-       soporta, la barra deja de ser sticky pero el resto sigue funcionando. */
+    /* --- STICKY HEADER PARA EL SELECTOR DE CATEGORIA --- */
     div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div > div.sticky-anchor-menu) {
         position: sticky;
         top: 0;
@@ -81,6 +78,7 @@ if 'folio' not in st.session_state: st.session_state.folio = 1
 if 'ultimo_conteo_cocina' not in st.session_state: st.session_state.ultimo_conteo_cocina = 0
 if 'categoria_activa_carrito' not in st.session_state: st.session_state.categoria_activa_carrito = None
 if 'categoria_activa_puesto' not in st.session_state: st.session_state.categoria_activa_puesto = None
+if 'cajero_actual' not in st.session_state: st.session_state.cajero_actual = ""
 
 # --- GENERADOR DE HORAS ---
 def obtener_horas_disponibles():
@@ -92,6 +90,13 @@ def obtener_horas_disponibles():
         horas.append(siguiente_hora.strftime("%H:%M"))
         siguiente_hora += timedelta(minutes=30)
     return horas
+
+# --- FORMATEA EL HORARIO DE ENTREGA (nunca la hora en que se creo el pedido) ---
+def formatear_horario(tiempo, hora):
+    if tiempo == "Ahora":
+        return None
+    partes = hora.split(" ")
+    return partes[1] if len(partes) > 1 else hora
 
 # --- EL MENU BASE (fijo en codigo) ---
 MENU = {
@@ -156,9 +161,29 @@ def construir_menu_final():
 
 MENU_FINAL = construir_menu_final()
 
-# --- PRODUCTOS QUE ACTIVAN EL DESCUENTO AUTOMATICO DE "Pan Telera" ---
 PRODUCTOS_PAN_AUTOMATICO = {"Torta de Chilaquiles"}
 PRODUCTOS_PAN_OPCIONAL = {"Plato de Chilaquiles"}
+
+# --- LISTA DE CLIENTES CONOCIDOS (para el selector con busqueda) ---
+def obtener_clientes_conocidos():
+    nombres = set()
+    for fila in datos_deudas_global:
+        c = fila.get("Cliente")
+        if c and c not in ("X", "Mostrador"):
+            nombres.add(c)
+    for fila in datos_ops_global[1:]:
+        if fila and fila[0] and fila[0] not in ("X", "Mostrador"):
+            nombres.add(fila[0])
+    return sorted(nombres)
+
+def selector_cliente(key_base, valor_por_defecto="X"):
+    """Selectbox con busqueda (nativa de Streamlit al escribir) + opcion de cliente nuevo."""
+    conocidos = obtener_clientes_conocidos()
+    opciones = ["X"] + conocidos + ["\u2795 Nuevo cliente..."]
+    seleccion = st.selectbox("\U0001F464 Cliente:", opciones, index=0, key=f"{key_base}_sel")
+    if seleccion == "\u2795 Nuevo cliente...":
+        return st.text_input("Nombre del nuevo cliente:", value="", key=f"{key_base}_nuevo")
+    return seleccion
 
 # --- FUNCION MAESTRA DE MONITORES ---
 def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado, ordenar_por_urgencia=False):
@@ -204,7 +229,12 @@ def mostrar_pedidos(destino_filtro, estado_actual, texto_boton, nuevo_estado, or
                 col_info, col_btn = st.columns([3, 2])
                 with col_info:
                     st.markdown(f"### \U0001F6D2 {producto}")
-                    st.write(f"\U0001F464 **Cliente:** {cliente} | \U0001F552 **Hora:** {hora}")
+                    st.write(f"\U0001F464 **Cliente:** {cliente}")
+                    horario_especial = formatear_horario(tiempo, hora)
+                    if horario_especial:
+                        st.markdown(f"<span style='font-size:20px; font-weight:bold; color:#0073E6;'>\U0001F552 Entregar a las {horario_especial}</span>", unsafe_allow_html=True)
+                    else:
+                        st.caption("\u26A1 Para AHORA")
                     if notas: st.warning(f"\U0001F4DD **Notas:** {notas}")
                 with col_btn:
                     st.write("")
@@ -239,6 +269,14 @@ with st.sidebar:
     if sh is None and st.session_state.get("_error_conexion"):
         st.caption(f"\u26A0\uFE0F Sin conexion a Sheets: {st.session_state['_error_conexion']}")
 
+    st.divider()
+    st.markdown("### \U0001F9D1\u200D\U0001F4BC Cajero")
+    st.session_state.cajero_actual = st.text_input("\u00BFQuien esta cobrando?", value=st.session_state.cajero_actual, key="cajero_input")
+    if not st.session_state.cajero_actual:
+        st.caption("\u26A0\uFE0F Escribe tu nombre para que quede registrado en cada pedido.")
+
+cajero_para_registro = st.session_state.cajero_actual.strip() if st.session_state.cajero_actual.strip() else "Sin especificar"
+
 # --- LAS PESTANAS DE OPERACION (Admin aparece solo con el PIN correcto) ---
 nombres_tabs = ["\U0001F6D2 Carrito", "\U0001F964 Puesto", "\u2705 Listos", "\U0001F373 Cocina", "\U0001F4C5 Agendados", "\U0001F4D3 Pagos", "\U0001F4E6 Inventario"]
 if admin_activo:
@@ -255,24 +293,21 @@ with tab1:
     st.title("\U0001F6D2 Carrito")
     f_actual = st.session_state.folio
 
-    # --- BARRA DE CATEGORIAS STICKY ---
+    # --- SELECTOR DE CATEGORIA (compacto, no se apila en celular) ---
     if st.session_state.categoria_activa_carrito not in MENU_FINAL:
         st.session_state.categoria_activa_carrito = list(MENU_FINAL.keys())[0]
 
     with st.container():
         st.markdown('<div class="sticky-anchor-menu"></div>', unsafe_allow_html=True)
-        st.write("#### \U0001F4CC Categoria:")
         cats = list(MENU_FINAL.keys())
-        cols_cat = st.columns(len(cats))
-        for idx, cat in enumerate(cats):
-            etiqueta_corta = cat.split(" (")[0]
-            with cols_cat[idx]:
-                tipo_boton = "primary" if cat == st.session_state.categoria_activa_carrito else "secondary"
-                if st.button(etiqueta_corta, key=f"catbtn_carrito_{cat}", use_container_width=True, type=tipo_boton):
-                    st.session_state.categoria_activa_carrito = cat
-                    st.rerun()
+        categoria_mostrada = st.selectbox(
+            "\U0001F4CC Categoria:",
+            cats,
+            index=cats.index(st.session_state.categoria_activa_carrito),
+            key="selector_categoria_carrito"
+        )
+        st.session_state.categoria_activa_carrito = categoria_mostrada
 
-    categoria_mostrada = st.session_state.categoria_activa_carrito
     productos_categoria = MENU_FINAL[categoria_mostrada]
 
     st.write(f"### {categoria_mostrada}")
@@ -350,7 +385,6 @@ with tab1:
                 else:
                     item['destino_final'] = item['destino']
 
-                # --- ALGORITMO DE PAN: checkbox opcional para Plato de Chilaquiles ---
                 if item['producto_puro'] in PRODUCTOS_PAN_OPCIONAL:
                     item['descuenta_pan'] = st.checkbox("\u00BFIncluye pan telera?", value=item.get('descuenta_pan', False), key=f"pan_c_{f_actual}_{index}")
             total += item['precio']
@@ -359,17 +393,23 @@ with tab1:
 
         # --- CLIENTE / DIA / HORARIO / PAGO AL FINAL, JUSTO ANTES DE ENVIAR ---
         st.divider()
-        col_nom, col_dia, col_hora = st.columns([2, 1.5, 1.5])
-        with col_nom: cliente = st.text_input("\U0001F464 Cliente (Obligatorio para deudas):", value="Mostrador", key=f"cli_{f_actual}")
-        with col_dia: dia_pedido = st.radio("\U0001F4C5 Dia:", ["Hoy", "Manana", "Otro"], horizontal=True, key=f"dia_{f_actual}")
-        with col_hora:
-            tiempo = st.radio("\u23F1\uFE0F Horario:", ["Ahora", "Mas tarde"], horizontal=True, key=f"tie_{f_actual}")
-            hora_entrega = st.selectbox("\u00BFA que hora?", obtener_horas_disponibles(), key=f"hor_{f_actual}") if tiempo == "Mas tarde" else ""
+        col_nom, col_dia = st.columns([2, 2])
+        with col_nom:
+            cliente = selector_cliente(f"cli_{f_actual}")
+        with col_dia:
+            dia_pedido = st.radio("\U0001F4C5 Dia:", ["Hoy", "Manana", "Otro"], horizontal=True, key=f"dia_{f_actual}")
+
+        tiempo = st.radio("\u23F1\uFE0F Horario:", ["Ahora", "Mas tarde"], horizontal=True, key=f"tie_{f_actual}")
+        if tiempo == "Mas tarde":
+            horas_disp = obtener_horas_disponibles()
+            hora_entrega = st.select_slider("\u00BFA que hora? (desliza, sin teclado)", options=horas_disp, key=f"hor_{f_actual}")
+        else:
+            hora_entrega = ""
 
         if dia_pedido == "Manana": fecha_final_entrega = (hoy_obj + timedelta(days=1)).strftime("%d/%m/%Y")
         elif dia_pedido == "Otro":
-            fecha_calendario = st.date_input("Selecciona fecha:", hoy_obj + timedelta(days=2), key=f"cal_{f_actual}")
-            fecha_final_entrega = fecha_calendario.strftime("%d/%m/%Y")
+            opciones_fecha = [(hoy_obj + timedelta(days=d)).strftime("%d/%m/%Y") for d in range(2, 31)]
+            fecha_final_entrega = st.select_slider("Selecciona fecha (desliza, sin teclado):", options=opciones_fecha, key=f"cal_{f_actual}")
         else: fecha_final_entrega = hoy_str
 
         pago = st.radio("\U0001F4B5 Estado del Pago:", ["Pagado", "Pendiente"], horizontal=True, key=f"pag_{f_actual}")
@@ -394,7 +434,7 @@ with tab1:
                                 estado = "Pendiente" if es_para_despues else "Entregado"
                             else:
                                 estado = "Preparando"
-                            sh.worksheet("Operaciones").append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0, fecha_final_entrega])
+                            sh.worksheet("Operaciones").append_row([cliente, item['producto'], destino_real, item['notas'], tiempo, hora_final, estado, total if item == st.session_state.ticket_carrito[0] else 0, fecha_final_entrega, cajero_para_registro])
                             detalles_ticket.append(item['producto'])
 
                         if pago == "Pendiente":
@@ -409,7 +449,6 @@ with tab1:
                                 if comprados > 0:
                                     sh.worksheet("Inventario").update_cell(idx, 2, p_stock - comprados)
 
-                            # --- ALGORITMO DE PAN: descuenta "Pan Telera" extra por Torta/Plato de Chilaquiles ---
                             total_pan_extra = sum(1 for it in st.session_state.ticket_carrito if it.get('descuenta_pan'))
                             if total_pan_extra > 0:
                                 for idx, row in enumerate(datos_inv_global, start=2):
@@ -437,20 +476,17 @@ with tab2:
     if st.session_state.categoria_activa_puesto not in categorias_puesto_disponibles:
         st.session_state.categoria_activa_puesto = categorias_puesto_disponibles[0] if categorias_puesto_disponibles else None
 
-    with st.container():
-        st.markdown('<div class="sticky-anchor-menu"></div>', unsafe_allow_html=True)
-        st.write("#### \U0001F4CC Categoria:")
-        cols_cat_p = st.columns(len(categorias_puesto_disponibles)) if categorias_puesto_disponibles else []
-        for idx, cat in enumerate(categorias_puesto_disponibles):
-            etiqueta_corta = cat.split(" (")[0]
-            with cols_cat_p[idx]:
-                tipo_boton = "primary" if cat == st.session_state.categoria_activa_puesto else "secondary"
-                if st.button(etiqueta_corta, key=f"catbtn_puesto_{cat}", use_container_width=True, type=tipo_boton):
-                    st.session_state.categoria_activa_puesto = cat
-                    st.rerun()
+    if categorias_puesto_disponibles:
+        with st.container():
+            st.markdown('<div class="sticky-anchor-menu"></div>', unsafe_allow_html=True)
+            categoria_p_mostrada = st.selectbox(
+                "\U0001F4CC Categoria:",
+                categorias_puesto_disponibles,
+                index=categorias_puesto_disponibles.index(st.session_state.categoria_activa_puesto),
+                key="selector_categoria_puesto"
+            )
+            st.session_state.categoria_activa_puesto = categoria_p_mostrada
 
-    if st.session_state.categoria_activa_puesto:
-        categoria_p_mostrada = st.session_state.categoria_activa_puesto
         st.write(f"### {categoria_p_mostrada}")
         col1, col2 = st.columns(2)
         for i, (nombre, precio) in enumerate(MENU_FINAL[categoria_p_mostrada].items()):
@@ -498,11 +534,13 @@ with tab2:
 
         # --- CLIENTE / HORARIO / PAGO AL FINAL, JUSTO ANTES DE COBRAR ---
         st.divider()
-        col_nom_p, col_hora_p = st.columns(2)
-        with col_nom_p: cliente_p = st.text_input("\U0001F464 Cliente:", value="Mostrador", key="cli_p_ind")
-        with col_hora_p:
-            tiempo_p = st.radio("\u23F1\uFE0F Horario:", ["Ahora", "Mas tarde"], horizontal=True, key="tie_p_ind")
-            hora_entrega_p = st.selectbox("\u00BFA que hora?", obtener_horas_disponibles(), key="hor_p_ind") if tiempo_p == "Mas tarde" else ""
+        cliente_p = selector_cliente("cli_p_ind")
+        tiempo_p = st.radio("\u23F1\uFE0F Horario:", ["Ahora", "Mas tarde"], horizontal=True, key="tie_p_ind")
+        if tiempo_p == "Mas tarde":
+            horas_disp_p = obtener_horas_disponibles()
+            hora_entrega_p = st.select_slider("\u00BFA que hora? (desliza, sin teclado)", options=horas_disp_p, key="hor_p_ind")
+        else:
+            hora_entrega_p = ""
 
         pago_p = st.radio("\U0001F4B5 Estado del Pago:", ["Pagado Completo", "Pendiente / Fiado"], horizontal=True, key="pag_pue")
 
@@ -521,7 +559,7 @@ with tab2:
                         estado_final_p = "Pendiente" if tiempo_p == "Mas tarde" else "Entregado"
 
                         for item in st.session_state.ticket_puesto:
-                            sh.worksheet("Operaciones").append_row([cliente_p, item['producto'], "Directo", item['notas'], tiempo_p, hora_final, estado_final_p, total_p if item == st.session_state.ticket_puesto[0] else 0, hoy_str])
+                            sh.worksheet("Operaciones").append_row([cliente_p, item['producto'], "Directo", item['notas'], tiempo_p, hora_final, estado_final_p, total_p if item == st.session_state.ticket_puesto[0] else 0, hoy_str, cajero_para_registro])
                             detalles_ticket.append(item['producto'])
 
                         if pago_p == "Pendiente / Fiado":
@@ -548,9 +586,6 @@ with tab4:
 
     conteo_actual_cocina = contar_pendientes_cocina()
     if conteo_actual_cocina > st.session_state.ultimo_conteo_cocina:
-        # NOTA: los navegadores moviles (Chrome/Safari) bloquean el autoplay de audio
-        # hasta que haya habido una interaccion del usuario con la pagina. El sonido
-        # deberia funcionar despues de que el cajero toque cualquier boton una vez.
         components.html(
             f'<audio autoplay><source src="data:audio/wav;base64,{BEEP_BASE64}" type="audio/wav"></audio>',
             height=0
@@ -564,7 +599,7 @@ with tab3:
     mostrar_pedidos(None, "Listo", "Entregar al Cliente", "Entregado")
 
 # ==========================================
-# PESTANA 6: AGENDA FUTURA
+# PESTANA 6: AGENDA FUTURA (tarjetas visuales, con acciones)
 # ==========================================
 with tab6:
     st.header("\U0001F4C5 Pedidos Agendados")
@@ -585,20 +620,43 @@ with tab6:
                     continue
 
                 futuros += 1
-                with st.container():
-                    texto_info = f"\U0001F4C5 **Para el: {fecha_fila}** | \U0001F552 {hora_f}\n\n\U0001F464 **{cliente_f}** ordeno: **{producto_f}**"
-                    if notas_f:
-                        texto_info += f"\n\n\U0001F4DD {notas_f}"
-                    st.info(texto_info)
-
-                    if destino_f == "Directo":
-                        if st.button("\u2705 Marcar Entregado", key=f"agenda_entregar_{i}"):
-                            ws_ops_local.update_cell(i, 7, "Entregado")
+                with st.container(border=True):
+                    col_badge, col_info, col_acciones = st.columns([1, 3, 1.3])
+                    with col_badge:
+                        st.markdown(
+                            f"<div style='background-color:#0073E6;color:white;border-radius:10px;padding:10px 6px;text-align:center;font-weight:bold;'>\U0001F4C5<br>{fecha_fila}</div>",
+                            unsafe_allow_html=True
+                        )
+                    with col_info:
+                        st.markdown(f"#### {producto_f}")
+                        st.write(f"\U0001F464 {cliente_f}")
+                        horario_especial = formatear_horario(tiempo_f, hora_f)
+                        if horario_especial:
+                            st.markdown(f"<span style='font-size:19px; font-weight:bold; color:#0073E6;'>\U0001F552 Entregar a las {horario_especial}</span>", unsafe_allow_html=True)
+                        else:
+                            st.caption("\u26A1 Para AHORA (en cuanto llegue la fecha)")
+                        if notas_f:
+                            st.caption(f"\U0001F4DD {notas_f}")
+                        st.caption("\U0001F373 Va a Cocina" if destino_f == "Cocina" else "\U0001F9FE Entrega directa")
+                    with col_acciones:
+                        if destino_f == "Directo":
+                            if st.button("\u2705 Entregado", key=f"agenda_entregar_{i}", use_container_width=True):
+                                ws_ops_local.update_cell(i, 7, "Entregado")
+                                leer_base_datos.clear()
+                                st.rerun()
+                        if st.button("\U0001F5D1\uFE0F Cancelar", key=f"agenda_cancelar_{i}", use_container_width=True):
+                            ws_ops_local.delete_rows(i)
                             leer_base_datos.clear()
                             st.rerun()
-                    else:
-                        st.caption("\U0001F373 Se movera automaticamente a Cocina el dia de entrega.")
-                    st.divider()
+
+                    with st.expander("\u270F\uFE0F Editar notas"):
+                        nueva_nota = st.text_input("Notas:", value=notas_f, key=f"edit_nota_{i}")
+                        if st.button("\U0001F4BE Guardar cambios", key=f"guardar_nota_{i}"):
+                            ws_ops_local.update_cell(i, 4, nueva_nota)
+                            leer_base_datos.clear()
+                            st.success("Notas actualizadas.")
+                            st.rerun()
+
             if futuros == 0: st.success("No hay pedidos pendientes para los proximos dias.")
         except Exception as e:
             st.error(f"Error al leer agendados: {e}")
@@ -684,8 +742,10 @@ with tab7:
 if admin_activo and tab_admin is not None:
     with tab_admin:
         st.header("\u2699\uFE0F Panel de Administracion")
+
+        # --- AGREGAR PRODUCTO NUEVO (con inventario automatico) ---
         st.subheader("\u2795 Agregar producto nuevo al menu")
-        st.caption("El producto se guarda en la hoja 'Menu_Extra' (columnas: Categoria, Producto, Precio) y aparece en el menu del Carrito/Puesto en cuanto se recarguen los datos.")
+        st.caption("Se guarda en 'Menu_Extra' y, si marcas 'Controlar inventario', tambien se crea su fila en 'Inventario' con el stock inicial que indiques (util para Tortas u otros productos que se acaban).")
 
         if sh is None:
             st.error("No hay conexion a Google Sheets.")
@@ -695,16 +755,20 @@ if admin_activo and tab_admin is not None:
                 nuevo_precio = st.number_input("Precio ($):", min_value=0.0, step=5.0)
                 categorias_existentes = list(MENU.keys()) + ["\u2795 Extra (Admin)"]
                 nueva_categoria = st.selectbox("Categoria:", categorias_existentes)
+                controlar_inventario = st.checkbox("\U0001F4E6 Controlar inventario de este producto", value=True)
+                stock_inicial = st.number_input("Stock inicial:", min_value=0, value=10, step=1)
 
                 if st.form_submit_button("\U0001F4BE Guardar producto"):
                     if nuevo_nombre.strip():
                         try:
                             sh.worksheet("Menu_Extra").append_row([nueva_categoria, nuevo_nombre.strip(), nuevo_precio])
+                            if controlar_inventario:
+                                sh.worksheet("Inventario").append_row([nuevo_nombre.strip(), int(stock_inicial)])
                             leer_base_datos.clear()
                             st.success(f"Producto '{nuevo_nombre}' agregado correctamente.")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"No se pudo guardar: {e}. Verifica que exista la hoja 'Menu_Extra' con columnas Categoria, Producto, Precio.")
+                            st.error(f"No se pudo guardar: {e}. Verifica que existan las hojas 'Menu_Extra' (Categoria, Producto, Precio) e 'Inventario' (Producto, Stock).")
                     else:
                         st.warning("Escribe un nombre de producto.")
 
@@ -715,4 +779,65 @@ if admin_activo and tab_admin is not None:
                 st.write(f"\u25AA\uFE0F **{fila.get('Producto','?')}** - ${fila.get('Precio','?')} ({fila.get('Categoria','?')})")
         else:
             st.caption("Todavia no se ha agregado ningun producto extra.")
-            
+
+        # --- VENTAS DEL DIA Y 3 DIAS ANTERIORES ---
+        st.divider()
+        st.subheader("\U0001F4B0 Ventas por dia")
+
+        def calcular_ventas_por_dia():
+            ventas = {}
+            for fila in datos_ops_global[1:]:
+                if len(fila) < 8: continue
+                fecha_fila = fila[8] if len(fila) > 8 else hoy_str
+                try:
+                    monto = float(fila[7]) if fila[7] not in ("", None) else 0.0
+                except Exception:
+                    monto = 0.0
+                ventas[fecha_fila] = ventas.get(fecha_fila, 0.0) + monto
+            return ventas
+
+        ventas_dia = calcular_ventas_por_dia()
+        fechas_recientes = [(hoy_obj - timedelta(days=d)) for d in range(4)]
+        cols_ventas = st.columns(4)
+        for idx, fecha_obj in enumerate(fechas_recientes):
+            fecha_txt = fecha_obj.strftime("%d/%m/%Y")
+            etiqueta = "Hoy" if idx == 0 else fecha_obj.strftime("%d/%m")
+            with cols_ventas[idx]:
+                st.metric(etiqueta, f"${ventas_dia.get(fecha_txt, 0):.0f}")
+        st.caption("\u26A0\uFE0F El total de cada venta se guarda solo en la primera fila de ese ticket. Si cancelas justo esa fila desde Agendados, el monto de ese ticket dejaria de contarse aqui.")
+
+        # --- VENTAS POR CAJERO (HOY), RESUMEN COMPACTO ---
+        st.divider()
+        st.subheader("\U0001F9D1\u200D\U0001F4BC Ventas por cajero (hoy)")
+        ventas_cajero_hoy = {}
+        registros_cajero_hoy = {}
+        for fila in datos_ops_global[1:]:
+            if len(fila) < 8: continue
+            fecha_fila = fila[8] if len(fila) > 8 else hoy_str
+            if fecha_fila != hoy_str: continue
+            cajero_fila = fila[9] if len(fila) > 9 else "Sin especificar"
+            try:
+                monto = float(fila[7]) if fila[7] not in ("", None) else 0.0
+            except Exception:
+                monto = 0.0
+            ventas_cajero_hoy[cajero_fila] = ventas_cajero_hoy.get(cajero_fila, 0.0) + monto
+            registros_cajero_hoy[cajero_fila] = registros_cajero_hoy.get(cajero_fila, 0) + 1
+
+        if ventas_cajero_hoy:
+            for cajero_nombre, monto_total in sorted(ventas_cajero_hoy.items(), key=lambda x: -x[1]):
+                st.write(f"\U0001F464 **{cajero_nombre}** \u2014 ${monto_total:.0f} ({registros_cajero_hoy[cajero_nombre]} producto(s) registrados hoy)")
+            st.caption("Nota: los pedidos guardados antes de este cambio no tienen cajero asociado y apareceran como 'Sin especificar'.")
+        else:
+            st.caption("Sin ventas registradas hoy todavia.")
+
+        # --- SUGERENCIAS PARA SEGUIR CRECIENDO EL ADMIN ---
+        st.divider()
+        st.subheader("\U0001F4A1 Ideas para seguir mejorando el Admin")
+        st.caption("Todavia no implementadas, para cuando quieras seguir creciendo el panel:")
+        st.markdown("""
+- Editar o eliminar productos existentes del menu (hoy solo se pueden agregar).
+- Alerta visual cuando un producto se quede en 2 unidades o menos.
+- Boton de "Cerrar caja del dia" que resuma ventas, imprima o exporte un corte y reinicie el folio.
+- Exportar el corte del dia a PDF o Excel.
+- Historial de cambios de precio por producto.
+""")
