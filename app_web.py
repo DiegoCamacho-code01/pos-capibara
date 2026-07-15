@@ -5,32 +5,36 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 # ==========================================
-# 1. CONFIGURACIÓN VISUAL Y CSS (Aspecto Profesional)
+# 1. CONFIGURACIÓN VISUAL Y CSS (Diseño Profesional e Intuitivo)
 # ==========================================
 st.set_page_config(page_title="POS Sistema", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
     /* Botones Táctiles Gigantes */
-    div.stButton > button { height: 75px; border-radius: 8px; border: 1px solid #005A9E; font-weight: 600; background-color: #F3F9FF; color: #002244; font-size: 16px;}
+    div.stButton > button { height: 75px; border-radius: 8px; border: 1px solid #005A9E; font-weight: 600; background-color: #FFFFFF; color: #002244; font-size: 16px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
+    div.stButton > button:hover { border-color: #005A9E; background-color: #F3F9FF; }
     div.stButton > button:active { background-color: #CCE5FF; transform: scale(0.98); }
     div.stButton > button[kind="primary"] { background-color: #005A9E; color: white; border: none; }
     
     /* Alerta Stock Bajo */
     .btn-alerta > button { background-color: #FFF3CD !important; color: #856404 !important; border: 1px solid #FFEEBA !important; }
     
-    /* Barra Pegajosa */
+    /* Botones Deshabilitados (Agotado) */
+    div.stButton > button:disabled { background-color: #E9ECEF !important; color: #6C757D !important; border: 1px solid #DEE2E6 !important; opacity: 1; }
+    
+    /* Barra Pegajosa (Menú de Categorías) */
     .sticky-header { position: sticky; top: 0; background-color: white; z-index: 999; padding: 15px 0; border-bottom: 1px solid #E1E4E8; margin-bottom: 20px;}
     
-    /* Menú Cuadros Táctiles */
+    /* Cuadros Táctiles de Categorías (Botones Superiores) */
     div[role="radiogroup"] { flex-wrap: wrap; gap: 8px; }
     div[role="radiogroup"] > label > div:first-child { display: none !important; }
-    div[role="radiogroup"] > label { border: 1px solid #005A9E; padding: 10px 20px !important; border-radius: 8px !important; cursor: pointer; transition: 0.2s; background-color: white;}
-    div[role="radiogroup"] > label[data-checked="true"] { background-color: #005A9E !important; color: white !important; }
+    div[role="radiogroup"] > label { border: 1px solid #005A9E; padding: 10px 20px !important; border-radius: 8px !important; cursor: pointer; transition: 0.2s; background-color: white; font-weight: 600; color: #005A9E;}
+    div[role="radiogroup"] > label[data-checked="true"] { background-color: #005A9E !important; color: white !important; box-shadow: 0 2px 5px rgba(0,90,158,0.3);}
     
-    /* Tarjetas Visuales */
-    .card { background-color: #FFFFFF; padding: 15px; border-radius: 8px; border-left: 4px solid #005A9E; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-right: 1px solid #E1E4E8; border-top: 1px solid #E1E4E8; border-bottom: 1px solid #E1E4E8;}
-    .card-urgente { border-left: 4px solid #D93025; }
+    /* Tarjetas Visuales (Monitor de Cocina) */
+    .card { background-color: #FFFFFF; padding: 15px; border-radius: 8px; border-left: 5px solid #005A9E; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-right: 1px solid #E1E4E8; border-top: 1px solid #E1E4E8; border-bottom: 1px solid #E1E4E8;}
+    .card-urgente { border-left: 5px solid #D93025; background-color: #FEF7F7; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -98,6 +102,7 @@ MENU_BASE = {
     "Esquimos": {"Fresa": 45, "Taro": 45, "Chai": 45, "Matcha": 45, "Rompope": 45, "Red Velvet": 45, "Pistache": 45, "Galleta": 45, "Mora": 45, "Cereza": 45, "Refresher Darks": 45, "Cafe": 45, "Moka": 45, "Oreo": 45, "Chocolate": 45},
     "Chamoyadas": {"Fresa": 65, "Mango": 65, "Temporada": 65},
     "Platillos": {"Ensalada": 65, "Sandwich": 65, "Plato de Chilaquiles": 50, "Torta de Chilaquiles": 65},
+    "Tortas": {},
     "Panadería": {"Pan de Dulce": 25, "Telera": 5}
 }
 
@@ -108,23 +113,25 @@ if len(inv) > 1:
     for row in inv[1:]:
         if len(row) >= 5 and str(row[4]).strip().lower() == "activo":
             prod, stock_str, cat, precio_str = row[0], row[1], row[2], row[3]
-            try: dict_inv[prod] = int(stock_str)
-            except: dict_inv[prod] = 0
+            
+            # SOLUCIÓN DE INVENTARIO INFINITO: 
+            # Solo contabiliza límites si el producto pertenece a la categoría "Tortas"
+            if "Tortas" in cat:
+                try: dict_inv[prod] = int(stock_str)
+                except: dict_inv[prod] = 0
+            else:
+                dict_inv[prod] = None # Infinito, no se restará stock visualmente
             
             if cat not in MENU: MENU[cat] = {}
             try: MENU[cat][prod] = float(precio_str)
             except: MENU[cat][prod] = 0.0
 
+# Eliminar menú vacío de Tortas si no hay inventario
+if not MENU["Tortas"]:
+    del MENU["Tortas"]
+
 for c_apagada in st.session_state.cat_apagadas:
     if c_apagada in MENU: del MENU[c_apagada]
-
-# Búsqueda de clientes históricos
-clientes_historicos = []
-if len(ops) > 1:
-    clientes_historicos.extend([f[0] for f in ops[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
-if len(deu) > 1:
-    clientes_historicos.extend([f[0] for f in deu[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
-clientes_unicos = sorted(list(set(clientes_historicos)))
 
 # ==========================================
 # 5. MENÚ LATERAL Y PESTAÑAS
@@ -158,6 +165,7 @@ with tabs[0]:
         btn_txt = f"{n}\n${p}"
         agotado, alerta = False, False
         
+        # Solo procesa las alertas si es un producto sujeto a inventario (Tortas)
         if stock is not None: 
             if stock <= 0: 
                 btn_txt += "\n(AGOTADO)"
@@ -200,18 +208,15 @@ with tabs[0]:
         st.write(f"### Total a Cobrar: ${total}")
         st.divider()
         
-        # Selección Limpia de Cliente
         st.write("**Datos del Cliente**")
-        c_cli_select, c_pago = st.columns([2, 1])
-        with c_cli_select:
-            opcion_cliente = st.selectbox("Seleccione cliente frecuente o registre uno nuevo:", ["--- NUEVO CLIENTE ---"] + clientes_unicos)
-            if opcion_cliente == "--- NUEVO CLIENTE ---":
-                cliente = st.text_input("Nombre del Cliente:", placeholder="Escriba el nombre para registrar...")
-            else:
-                cliente = opcion_cliente
+        c_cli, c_pago = st.columns([2, 1])
+        with c_cli:
+            # SOLUCIÓN CASILLA ÚNICA: Solo una casilla de texto, completamente limpia y vacía.
+            cliente = st.text_input("Nombre del Cliente:", value="", placeholder="Escribe el nombre del cliente...", label_visibility="collapsed")
                 
         with c_pago:
-            pago = st.radio("Estado de Pago:", ["Pagado", "Pendiente / Fiado"], index=1, horizontal=True)
+            # Estado modificado a solo "Pendiente"
+            pago = st.radio("Estado de Pago:", ["Pagado", "Pendiente"], index=0, horizontal=True)
 
         c_dia, c_hora = st.columns(2)
         with c_dia:
@@ -233,8 +238,8 @@ with tabs[0]:
                 st.rerun()
         with c_enviar:
             if st.button("PROCESAR ORDEN", type="primary", use_container_width=True):
-                if not cliente.strip() and pago == "Pendiente / Fiado" and not st.session_state.admin_mode: 
-                    st.warning("Se requiere registrar un nombre para generar deuda.")
+                if not cliente.strip() and pago == "Pendiente" and not st.session_state.admin_mode: 
+                    st.warning("Se requiere registrar un nombre para generar una deuda.")
                 else:
                     nom_final = cliente.strip() if cliente.strip() else "Mostrador"
                     panes = sum(1 for i in st.session_state.cart if "telera" in i['prod'].lower() or "torta de chilaquiles" in i['prod'].lower() or i['pan'])
@@ -243,10 +248,9 @@ with tabs[0]:
                     for i in st.session_state.cart:
                         dest = "Cocina" if any(x in i['prod'] for x in ["Platillo", "Frappé", "Esquimo", "Chamoyada", "Bebidas Frías", "Cafetería"]) else "Directo"
                         est = "Pendiente" if dia_tipo != "Hoy" or tiempo != "Inmediato" else ("Preparando" if dest == "Cocina" else "Entregado")
-                        # Registro de operador en el índice 9 (Columna J en Excel)
                         sh.worksheet("Operaciones").append_row([nom_final, i['prod'], dest, i['notas'], tiempo, h_real, est, total if i == st.session_state.cart[0] else 0, fecha_fin, st.session_state.cajero])
                     
-                    if pago == "Pendiente / Fiado": 
+                    if pago == "Pendiente": 
                         sh.worksheet("Deudas").append_row([nom_final, "Deuda", total, "Ticket", h_real])
                     
                     if len(inv) > 1:
@@ -297,10 +301,7 @@ with tabs[1]:
             
             c_nom_p, c_pag_p = st.columns([1.5, 1])
             with c_nom_p: 
-                opc_p = st.selectbox("Cliente:", ["--- NUEVO CLIENTE ---"] + clientes_unicos, key="sb_puesto")
-                if opc_p == "--- NUEVO CLIENTE ---":
-                    cliente_p = st.text_input("Nombre Cliente:", key="txt_puesto")
-                else: cliente_p = opc_p
+                cliente_p = st.text_input("Nombre Cliente:", value="", key="txt_puesto", placeholder="Escribe el nombre...")
             with c_pag_p: 
                 pago_p = st.radio("Estado:", ["Pagado", "Pendiente"], index=0, horizontal=True, key="pag_p")
             
@@ -386,13 +387,11 @@ with tabs[4]:
                 try:
                     fecha_pedido = datetime.strptime(f[8], "%d/%m/%Y").date()
                 except:
-                    fecha_pedido = hoy_obj # Valor de seguridad
+                    fecha_pedido = hoy_obj 
 
-                # Si la fecha ya pasó, simplemente la ocultamos de esta vista
                 if fecha_pedido < hoy_obj:
                     continue
                 
-                # Si la fecha es a futuro, la mostramos
                 if fecha_pedido > hoy_obj:
                     futuros += 1
                     st.info(f"**{f[1]}** - Fecha: {f[8]} | Cliente: {f[0]}")
@@ -478,11 +477,11 @@ with tabs[6]:
     with st.expander("Alta de Nuevo Producto"):
         with st.form("add_inv"):
             n_prod = st.text_input("Nombre comercial:")
-            n_cat = st.selectbox("Clasificación de menú:", list(MENU.keys()))
+            n_cat = st.selectbox("Clasificación de menú:", list(MENU_BASE.keys()))
             n_pre = st.number_input("Precio Unitario ($):", step=5.0)
             
-            if "Tortas" in n_cat or "Platillos" in n_cat:
-                st.info("Para productos perecederos, defina el inventario inicial:")
+            if "Tortas" in n_cat:
+                st.info("Para este producto perecedero, defina el inventario inicial:")
                 n_stk = st.number_input("Cantidad Física:", min_value=0, value=10)
             else:
                 n_stk = "" 
@@ -497,7 +496,7 @@ with tabs[6]:
                     st.warning("Especifique un nombre válido.")
 
     st.divider()
-    st.write("Conteo físico y existencias operativas:")
+    st.write("Conteo físico y existencias operativas (Solo para productos con límite):")
     
     if len(inv) > 1:
         with st.form("inv_form"):
@@ -505,7 +504,7 @@ with tabs[6]:
             nv = {}
             contador = 0
             for i, f in enumerate(inv[1:], start=2):
-                if len(f) >= 5 and str(f[4]).strip().lower() == "activo" and f[1] != "":
+                if len(f) >= 5 and str(f[4]).strip().lower() == "activo" and "Tortas" in f[2]:
                     try: val = int(f[1])
                     except: val = 0
                     
@@ -513,6 +512,9 @@ with tabs[6]:
                         nv[i] = st.number_input(f[0], value=val, min_value=0, key=f"ui_inv_{i}")
                     contador += 1
                     
+            if contador == 0:
+                st.info("No hay productos con conteo físico activo en este momento.")
+                
             if st.form_submit_button("Actualizar Conteos"):
                 for i, v in nv.items(): 
                     sh.worksheet("Inventario").update_cell(i, 2, v)
