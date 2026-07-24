@@ -33,7 +33,7 @@ fin_semana = inicio_semana + timedelta(days=6)
 semana_str = f"{inicio_semana.strftime('%d/%m')} al {fin_semana.strftime('%d/%m')}"
 
 # ==========================================
-# 2. CONEXIÓN Y LECTURA (Solución Error 429)
+# 2. CONEXIÓN Y LECTURA
 # ==========================================
 @st.cache_resource
 def conectar():
@@ -45,8 +45,6 @@ def conectar():
         return None
 sh = conectar()
 
-# Aumentamos el TTL a 600s para evitar el Error 429 (Límite de Google Sheets).
-# La info siempre estará actualizada porque leer.clear() se ejecuta tras cada registro.
 @st.cache_data(ttl=600)
 def leer():
     if not sh: return [], [], [], [], []
@@ -195,7 +193,6 @@ with tabs[0]:
         st.subheader("Resumen de Orden")
         total = 0
         for idx, item in enumerate(st.session_state.cart):
-            # 4 Columnas para permitir elegir el destino de CADA producto
             c1, c2, c3, c4 = st.columns([2.5, 1, 2, 2.5])
             with c1: st.write(f"▪ {item['prod']}")
             with c2: st.write(f"${item['precio']}")
@@ -204,9 +201,13 @@ with tabs[0]:
                 if "Chilaquiles" in item['prod'] and "Torta" not in item['prod']: 
                     item['pan'] = st.checkbox("Incluir Telera", key=f"cpan_{idx}")
             with c4:
-                # Elige destino individual (Platillos se pre-asignan a Cocina, el resto Directa)
-                def_idx = 1 if item.get('cat') == "Platillos" else 0
-                item['dest'] = st.selectbox("Destino", ["Entrega Directa", "Cocina"], index=def_idx, key=f"dest_{idx}", label_visibility="collapsed")
+                # LÓGICA DE COCINA OPTIMIZADA
+                if item.get('cat') == "Platillos":
+                    item['dest'] = "Cocina"
+                    st.markdown("<div style='padding-top:10px; color:#005A9E; font-weight:600;'>👨‍🍳 A cocina</div>", unsafe_allow_html=True)
+                else:
+                    a_cocina = st.checkbox("A cocina", key=f"dest_{idx}")
+                    item['dest'] = "Cocina" if a_cocina else "Entrega Directa"
                 
             total += item['precio']
             
@@ -217,9 +218,10 @@ with tabs[0]:
         
         c_cli, c_pago = st.columns([2, 1])
         with c_cli:
-            opcion_cliente = st.selectbox("Buscar cliente (o seleccione NUEVO):", ["--- NUEVO CLIENTE ---"] + clientes_unicos)
-            if opcion_cliente == "--- NUEVO CLIENTE ---":
-                cliente = st.text_input("Nombre del nuevo cliente:", placeholder="Escriba aquí el nombre...")
+            # LÓGICA DE CLIENTE EN BLANCO
+            opcion_cliente = st.selectbox("Buscar cliente registrado:", [""] + clientes_unicos)
+            if opcion_cliente == "":
+                cliente = st.text_input("Nombre del cliente:", placeholder="Escriba aquí el nombre...")
             else:
                 cliente = opcion_cliente
                 
@@ -254,7 +256,7 @@ with tabs[0]:
                     h_real = datetime.now(zona_mx).strftime("%H:%M") if hora_fin == "Ahora" else f"{fecha_fin} {hora_fin}"
                     
                     for i in st.session_state.cart:
-                        dest = i['dest'] # Toma el destino individual seleccionado en el carrito
+                        dest = i['dest']
                         est = "Pendiente" if dia_tipo != "Hoy" or tiempo != "Inmediato" else ("Preparando" if dest == "Cocina" else "Entregado")
                         sh.worksheet("Operaciones").append_row([nom_final, i['prod'], dest, i['notas'], tiempo, h_real, est, total if i == st.session_state.cart[0] else 0, fecha_fin, st.session_state.cajero])
                     
@@ -310,9 +312,9 @@ with tabs[1]:
             
             c_nom_p, c_pag_p = st.columns([1.5, 1])
             with c_nom_p: 
-                opc_p = st.selectbox("Cliente:", ["--- NUEVO CLIENTE ---"] + clientes_unicos, key="sb_puesto")
-                if opc_p == "--- NUEVO CLIENTE ---":
-                    cliente_p = st.text_input("Nombre del nuevo cliente:", key="txt_puesto")
+                opc_p = st.selectbox("Buscar cliente:", [""] + clientes_unicos, key="sb_puesto")
+                if opc_p == "":
+                    cliente_p = st.text_input("Nombre del cliente:", key="txt_puesto", placeholder="Escriba el nombre...")
                 else: 
                     cliente_p = opc_p
             with c_pag_p: 
@@ -383,7 +385,6 @@ with tabs[3]:
             if len(f) > 8 and f[8] == hoy_str and f[6] == "Listo":
                 hay_listos = True
                 st.success(f"**{f[1]}** | Para: {f[0]}")
-                # TEXTO MODIFICADO
                 if st.button("Entregado a cliente", key=f"ent_{i}"):
                     sh.worksheet("Operaciones").update_cell(i, 7, "Entregado")
                     leer.clear()
@@ -430,7 +431,6 @@ with tabs[4]:
                                     leer.clear()
                                     st.rerun()
                     
-                    # BOTONES RÁPIDOS SEPARADOS
                     c_p1, c_p2 = st.columns(2)
                     with c_p1:
                         if st.button("Pasar a cocina hoy", key=f"ae_coc_{i}"):
