@@ -649,10 +649,14 @@ if st.session_state.admin_mode:
                     
         st.divider()
         
-        # REPORTE DE GASTOS AGRUPADOS POR SEMANA
+       # REPORTE DE GASTOS AGRUPADOS POR SEMANA
         st.subheader("Historial de Gastos por Semana")
-        if len(gas) > 0:
-            df_gas = pd.DataFrame(gas, columns=["Fecha", "Concepto", "Cantidad", "Unidad", "Precio_Unitario", "Total", "Semana"])
+        
+        # Filtramos para ignorar filas vacías, incompletas o encabezados manuales
+        gas_validos = [fila[:7] for fila in gas if len(fila) >= 7 and fila[0] != "Fecha"]
+        
+        if len(gas_validos) > 0:
+            df_gas = pd.DataFrame(gas_validos, columns=["Fecha", "Concepto", "Cantidad", "Unidad", "Precio_Unitario", "Total", "Semana"])
             
             # Limpiamos los datos para poder sumar
             df_gas['Total'] = pd.to_numeric(df_gas['Total'], errors='coerce').fillna(0)
