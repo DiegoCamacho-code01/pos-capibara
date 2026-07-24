@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 # ==========================================
-# 1. CONFIGURACIÓN VISUAL Y CSS (Diseño Profesional)
+# 1. CONFIGURACIÓN VISUAL Y CSS
 # ==========================================
 st.set_page_config(page_title="POS Sistema", layout="wide", initial_sidebar_state="collapsed")
 
@@ -18,7 +18,7 @@ st.markdown("""
     .btn-alerta > button { background-color: #FFF3CD !important; color: #856404 !important; border: 1px solid #FFEEBA !important; }
     div.stButton > button:disabled { background-color: #E9ECEF !important; color: #6C757D !important; border: 1px solid #DEE2E6 !important; opacity: 1; }
     .sticky-header { position: sticky; top: 0; background-color: white; z-index: 999; padding: 15px 0; border-bottom: 1px solid #E1E4E8; margin-bottom: 20px;}
-    div[role="radiogroup"].st-emotion-cache-1n76uvr { flex-wrap: wrap; gap: 8px; } /* Ajuste de radio buttons superiores */
+    div[role="radiogroup"].st-emotion-cache-1n76uvr { flex-wrap: wrap; gap: 8px; } 
     .card { background-color: #FFFFFF; padding: 15px; border-radius: 8px; border-left: 5px solid #005A9E; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-right: 1px solid #E1E4E8; border-top: 1px solid #E1E4E8; border-bottom: 1px solid #E1E4E8;}
     .card-urgente { border-left: 5px solid #D93025; background-color: #FEF7F7; }
 </style>
@@ -28,13 +28,12 @@ zona_mx = timezone(timedelta(hours=-6))
 hoy_obj = datetime.now(zona_mx).date()
 hoy_str = hoy_obj.strftime("%d/%m/%Y")
 
-# Calculamos la semana actual (Lunes a Domingo) para agrupar gastos
 inicio_semana = hoy_obj - timedelta(days=hoy_obj.weekday())
 fin_semana = inicio_semana + timedelta(days=6)
 semana_str = f"{inicio_semana.strftime('%d/%m')} al {fin_semana.strftime('%d/%m')}"
 
 # ==========================================
-# 2. CONEXIÓN Y LECTURA
+# 2. CONEXIÓN Y LECTURA (Solución Error 429)
 # ==========================================
 @st.cache_resource
 def conectar():
@@ -46,7 +45,9 @@ def conectar():
         return None
 sh = conectar()
 
-@st.cache_data(ttl=2)
+# Aumentamos el TTL a 600s para evitar el Error 429 (Límite de Google Sheets).
+# La info siempre estará actualizada porque leer.clear() se ejecuta tras cada registro.
+@st.cache_data(ttl=600)
 def leer():
     if not sh: return [], [], [], [], []
     try: 
@@ -108,7 +109,6 @@ if len(inv) > 1:
         if len(row) >= 5 and str(row[4]).strip().lower() == "activo":
             prod, stock_str, cat, precio_str = row[0], row[1], row[2], row[3]
             
-            # INVENTARIO INFINITO: Solo se contabiliza para las Tortas
             if "Tortas" in cat:
                 try: dict_inv[prod] = int(stock_str)
                 except: dict_inv[prod] = 0
@@ -125,7 +125,6 @@ if not MENU["Tortas"]:
 for c_apagada in st.session_state.cat_apagadas:
     if c_apagada in MENU: del MENU[c_apagada]
 
-# Búsqueda de clientes históricos
 clientes_historicos = []
 if len(ops) > 1:
     clientes_historicos.extend([f[0] for f in ops[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
@@ -178,7 +177,6 @@ with tabs[0]:
         with cols[i%2]:
             if alerta: st.markdown('<div class="btn-alerta">', unsafe_allow_html=True)
             if st.button(btn_txt, use_container_width=True, disabled=agotado, key=f"c_{n}"):
-                # GUARDAMOS LA CATEGORÍA PARA SABER SI ES PLATILLO
                 st.session_state.cart.append({"prod": n, "precio": p, "notas": "", "pan": False, "cat": cat_seleccionada})
                 st.rerun()
             if alerta: st.markdown('</div>', unsafe_allow_html=True)
@@ -197,13 +195,19 @@ with tabs[0]:
         st.subheader("Resumen de Orden")
         total = 0
         for idx, item in enumerate(st.session_state.cart):
-            c1, c2, c3 = st.columns([3, 1, 2])
+            # 4 Columnas para permitir elegir el destino de CADA producto
+            c1, c2, c3, c4 = st.columns([2.5, 1, 2, 2.5])
             with c1: st.write(f"▪ {item['prod']}")
             with c2: st.write(f"${item['precio']}")
             with c3:
                 item['notas'] = st.text_input("Notas", key=f"cn_{idx}", label_visibility="collapsed", placeholder="Notas u observaciones...")
                 if "Chilaquiles" in item['prod'] and "Torta" not in item['prod']: 
                     item['pan'] = st.checkbox("Incluir Telera", key=f"cpan_{idx}")
+            with c4:
+                # Elige destino individual (Platillos se pre-asignan a Cocina, el resto Directa)
+                def_idx = 1 if item.get('cat') == "Platillos" else 0
+                item['dest'] = st.selectbox("Destino", ["Entrega Directa", "Cocina"], index=def_idx, key=f"dest_{idx}", label_visibility="collapsed")
+                
             total += item['precio']
             
         st.write(f"### Total a Cobrar: ${total}")
@@ -211,11 +215,10 @@ with tabs[0]:
         
         st.write("**Datos del Cliente y Orden**")
         
-        # BUSCADOR DE CLIENTES MEJORADO
         c_cli, c_pago = st.columns([2, 1])
         with c_cli:
-            opcion_cliente = st.selectbox("Buscar cliente (o seleccione NUEVO):", ["-"] + clientes_unicos)
-            if opcion_cliente == "-":
+            opcion_cliente = st.selectbox("Buscar cliente (o seleccione NUEVO):", ["--- NUEVO CLIENTE ---"] + clientes_unicos)
+            if opcion_cliente == "--- NUEVO CLIENTE ---":
                 cliente = st.text_input("Nombre del nuevo cliente:", placeholder="Escriba aquí el nombre...")
             else:
                 cliente = opcion_cliente
@@ -225,8 +228,6 @@ with tabs[0]:
 
         c_dest, c_dia = st.columns(2)
         with c_dest:
-            # BOTÓN DE DESTINO OPCIONAL
-            destino_pedido = st.radio("Enviar bebidas/postres a:", ["Entrega Directa", "Cocina"], horizontal=True)
             tiempo = st.radio("Horario:", ["Inmediato", "Definir Hora"], horizontal=True)
             if tiempo == "Definir Hora": hora_fin = st.time_input("Especificar Hora:", step=1800).strftime("%H:%M")
             else: hora_fin = "Ahora"
@@ -252,17 +253,11 @@ with tabs[0]:
                     panes = sum(1 for i in st.session_state.cart if "telera" in i['prod'].lower() or "torta de chilaquiles" in i['prod'].lower() or i['pan'])
                     h_real = datetime.now(zona_mx).strftime("%H:%M") if hora_fin == "Ahora" else f"{fecha_fin} {hora_fin}"
                     
-                    # LOGICA DE COCINA INTELIGENTE
                     for i in st.session_state.cart:
-                        if i['cat'] == "Platillos":
-                            dest = "Cocina" # Platillos forzosos a cocina
-                        else:
-                            dest = destino_pedido # Lo demás decide el usuario
-                            
+                        dest = i['dest'] # Toma el destino individual seleccionado en el carrito
                         est = "Pendiente" if dia_tipo != "Hoy" or tiempo != "Inmediato" else ("Preparando" if dest == "Cocina" else "Entregado")
                         sh.worksheet("Operaciones").append_row([nom_final, i['prod'], dest, i['notas'], tiempo, h_real, est, total if i == st.session_state.cart[0] else 0, fecha_fin, st.session_state.cajero])
                     
-                    # DESGLOSE TRANSPARENTE DE DEUDAS
                     if pago == "Pendiente": 
                         resumen_productos = ", ".join([i['prod'] for i in st.session_state.cart])
                         sh.worksheet("Deudas").append_row([nom_final, "Deuda", total, resumen_productos, hoy_str])
@@ -354,7 +349,6 @@ with tabs[2]:
     st.markdown("""<audio autoplay="true"><source src="https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
     
     if len(ops) > 1:
-        # Filtro de cocina exacto
         pedidos_cocina = [ (i, f) for i, f in enumerate(ops[1:], start=2) if len(f) > 8 and f[8] == hoy_str and f[6] == "Preparando" and f[2] == "Cocina" ]
         pedidos_cocina.sort(key=lambda x: (x[1][4] != "Inmediato", x[1][5])) 
         
@@ -389,7 +383,8 @@ with tabs[3]:
             if len(f) > 8 and f[8] == hoy_str and f[6] == "Listo":
                 hay_listos = True
                 st.success(f"**{f[1]}** | Para: {f[0]}")
-                if st.button("Despachar Orden", key=f"ent_{i}"):
+                # TEXTO MODIFICADO
+                if st.button("Entregado a cliente", key=f"ent_{i}"):
                     sh.worksheet("Operaciones").update_cell(i, 7, "Entregado")
                     leer.clear()
                     st.rerun()
@@ -417,7 +412,7 @@ with tabs[4]:
                     st.info(f"**{f[1]}** - Fecha: {f[8]} | Cliente: {f[0]}")
                     
                     if st.session_state.admin_mode:
-                        with st.expander("Modificar Orden"):
+                        with st.expander("Modificar Orden (Solo Admin)"):
                             n_cli = st.text_input("Cliente", value=f[0], key=f"ac_{i}")
                             n_fec = st.text_input("Fecha (DD/MM/YYYY)", value=f[8], key=f"af_{i}")
                             n_not = st.text_input("Notas", value=f[3], key=f"an_{i}")
@@ -434,8 +429,17 @@ with tabs[4]:
                                     sh.worksheet("Operaciones").delete_rows(i)
                                     leer.clear()
                                     st.rerun()
-                    else:
-                        if st.button("Pasar a Producción Hoy", key=f"ae_{i}"):
+                    
+                    # BOTONES RÁPIDOS SEPARADOS
+                    c_p1, c_p2 = st.columns(2)
+                    with c_p1:
+                        if st.button("Pasar a cocina hoy", key=f"ae_coc_{i}"):
+                            sh.worksheet("Operaciones").update_cell(i, 7, "Preparando")
+                            sh.worksheet("Operaciones").update_cell(i, 9, hoy_str)
+                            leer.clear()
+                            st.rerun()
+                    with c_p2:
+                        if st.button("Entregado", key=f"ae_ent_{i}"):
                             sh.worksheet("Operaciones").update_cell(i, 7, "Entregado")
                             leer.clear()
                             st.rerun()
@@ -470,7 +474,6 @@ with tabs[5]:
                         det = fila[3] if len(fila)>3 else ""
                         fec_original = fila[4] if len(fila)>4 else ""
                         
-                        # Formateo de fecha sutil (Día/Mes)
                         try: fec_corta = datetime.strptime(fec_original, "%d/%m/%Y").strftime("%d/%m")
                         except: fec_corta = fec_original
                         
@@ -548,20 +551,18 @@ if st.session_state.admin_mode:
     with tabs[7]:
         st.header("Panel Administrativo")
         
-        # --- REPORTE DE GANANCIAS HISTÓRICAS (Últimos 6 días de venta) ---
         st.subheader("Ingresos Recientes (Últimos 6 cortes)")
         cortes = []
         if len(hist) > 1:
             for row in hist:
                 if len(row) > 2 and ("Corte" in row[1] or "Cierre" in row[1]):
-                    # Limpiamos el texto para sacar el numero ("Ingreso Total: $1500" -> 1500)
                     try: 
                         monto_str = row[2].split("$")[1].replace(",", "").strip()
                         cortes.append({"Fecha": row[0], "Ingreso": float(monto_str)})
                     except: pass
                     
         if cortes:
-            cortes_recientes = cortes[-6:] # Tomamos los últimos 6
+            cortes_recientes = cortes[-6:] 
             df_cortes = pd.DataFrame(cortes_recientes)
             st.bar_chart(df_cortes.set_index("Fecha"))
         else:
@@ -622,7 +623,6 @@ if st.session_state.admin_mode:
     with tabs[8]:
         st.header("Control de Compras e Insumos")
         
-        # FORMULARIO DE REGISTRO
         with st.form("form_gastos"):
             st.write("Registrar nuevo gasto operativo:")
             g_conc = st.text_input("Concepto / Insumo (Ej. Vasos, Polvo Taro, Café):")
@@ -649,21 +649,16 @@ if st.session_state.admin_mode:
                     
         st.divider()
         
-       # REPORTE DE GASTOS AGRUPADOS POR SEMANA
         st.subheader("Historial de Gastos por Semana")
-        
-        # Filtramos para ignorar filas vacías, incompletas o encabezados manuales
         gas_validos = [fila[:7] for fila in gas if len(fila) >= 7 and fila[0] != "Fecha"]
         
         if len(gas_validos) > 0:
             df_gas = pd.DataFrame(gas_validos, columns=["Fecha", "Concepto", "Cantidad", "Unidad", "Precio_Unitario", "Total", "Semana"])
-            
-            # Limpiamos los datos para poder sumar
             df_gas['Total'] = pd.to_numeric(df_gas['Total'], errors='coerce').fillna(0)
             
             semanas_unicas = df_gas['Semana'].unique()
             
-            for sem in reversed(semanas_unicas): # Mostramos las más recientes primero
+            for sem in reversed(semanas_unicas): 
                 df_semana = df_gas[df_gas['Semana'] == sem]
                 total_semana = df_semana['Total'].sum()
                 
