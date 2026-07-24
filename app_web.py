@@ -214,8 +214,8 @@ with tabs[0]:
         # BUSCADOR DE CLIENTES MEJORADO
         c_cli, c_pago = st.columns([2, 1])
         with c_cli:
-            opcion_cliente = st.selectbox("Buscar cliente (o seleccione NUEVO):", ["CL"] + clientes_unicos)
-            if opcion_cliente == "--- NUEVO CLIENTE ---":
+            opcion_cliente = st.selectbox("Buscar cliente (o seleccione NUEVO):", ["-"] + clientes_unicos)
+            if opcion_cliente == "-":
                 cliente = st.text_input("Nombre del nuevo cliente:", placeholder="Escriba aquí el nombre...")
             else:
                 cliente = opcion_cliente
