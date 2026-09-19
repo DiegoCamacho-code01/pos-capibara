@@ -114,17 +114,17 @@ if 'cat_puesto_activa' not in st.session_state: st.session_state.cat_puesto_acti
 
 # Función generadora de texto para la Zebra
 def generar_texto_ticket(cliente, pago, items, total, tipo="venta"):
-    t = "================================\n"
-    t += "           FARO CAFE\n"
-    t += "================================\n"
+    t = "=============================\n"
+    t += "        FARO CAFE\n"
+    t += "=============================\n"
     t += f"FECHA: {hoy_str}   HORA: {datetime.now(zona_mx).strftime('%H:%M')}\n"
     t += f"CLIENTE: {cliente.upper()}\n"
     if tipo == "venta": t += f"COBRO: {pago.upper()}\n"
-    t += "--------------------------------\n\n"
+    t += "----------------------------\n\n"
     
     for i in items:
         # PRODUCTO GIGANTE Y DESTACADO
-        t += f"== {i['cant']}x {i['prod'].upper()} ==\n"
+        t += f" {i['cant']}x {i['prod'].upper()} ==\n"
         # Notas resaltadas
         if i['notas']:
             t += f"   >> EXTRAS: {i['notas']}\n"
@@ -132,12 +132,12 @@ def generar_texto_ticket(cliente, pago, items, total, tipo="venta"):
             t += f"   >> ENTREGAR A LAS: {i['hora']} HRS\n"
         t += "\n"
         
-    t += "--------------------------------\n"
+    t += "----------------------------\n"
     if tipo == "venta":
         t += f"TOTAL: $ {total:.2f}\n"
     else:
         t += "TICKET DE PRODUCCION - COCINA\n"
-    t += "================================\n\n\n"
+    t += "============================\n\n\n"
     return t
 
 # ==========================================
@@ -145,14 +145,15 @@ def generar_texto_ticket(cliente, pago, items, total, tipo="venta"):
 # ==========================================
 MENU_BASE = {
     "Café": {"Vainilla": 25.0, "Avellana": 25.0, "Clásico": 25.0, "Crema irlandesa": 30.0, "Caramelo": 30.0, "Canela": 30.0, "Te": 25.0},
-    "Frappés": {"Fresa": 65.0, "Taro": 65.0, "Chai": 65.0, "Matcha": 65.0, "Rompope": 65.0, "Red Velvet": 65.0, "Pistache": 65.0, "Galleta": 65.0, "Mora": 65.0, "Cereza": 65.0, "Refresher Darks": 65.0, "Cafe": 65.0, "Moka": 65.0, "Oreo": 65.0, "Chocolate": 65.0},
-    "Bebidas Frías": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
-    "Esquimos": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
-    "Chamoyadas": {"Fresa": 65.0, "Mango": 65.0, "Temporada": 65.0},
-    "Refreshers": {"Fresa": 50.0, "Mango": 50.0, "Mora": 50.0, "Limón": 50.0},
-    "Platillos": {"Ensalada": 65.0, "Sandwich": 65.0, "Plato de Chilaquiles": 50.0, "Torta de Chilaquiles": 65.0},
+    "Platillos": {"Ensalada": 75.0, "Sandwich": 65.0, "Plato de Chilaquiles": 55.0, "Torta de Chilaquiles": 45.0}, 
     "Tortas": {},
-    "Panadería": {"Pan de Dulce": 25.0, "Telera": 5.0}
+    "Panadería": {"Pan de Dulce": 25.0, "Telera": 5.0}    
+    "Bebidas Frías": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
+    "Frappés": {"Fresa": 65.0, "Taro": 65.0, "Chai": 65.0, "Matcha": 65.0, "Rompope": 65.0, "Red Velvet": 65.0, "Pistache": 65.0, "Galleta": 65.0, "Mora": 65.0, "Cereza": 65.0, "Refresher Darks": 65.0, "Cafe": 65.0, "Moka": 65.0, "Oreo": 65.0, "Chocolate": 65.0},
+     "Esquimos": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
+    "Chamoyadas": {"Fresa": 65.0, "Mango": 65.0, "Temporada": 65.0},
+    "Refreshers": {"Fresa": 55.0, "Cherry negra": 55.0, "Guayaba": 55.0, "Kiwi": 55.0},
+
 }
 
 def armar_nombre(cat, base):
