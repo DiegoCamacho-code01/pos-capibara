@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import gspread
 import json
 import pandas as pd
@@ -112,32 +113,30 @@ if 'ticket_imprimir' not in st.session_state: st.session_state.ticket_imprimir =
 if 'cat_activa' not in st.session_state: st.session_state.cat_activa = "Café"
 if 'cat_puesto_activa' not in st.session_state: st.session_state.cat_puesto_activa = "Café"
 
-# Función generadora de texto para la Zebra
+# Formato ancho 58mm (Max 32 caracteres por renglón)
 def generar_texto_ticket(cliente, pago, items, total, tipo="venta"):
-    t = "=============================\n"
-    t += "        FARO CAFE\n"
-    t += "=============================\n"
-    t += f"FECHA: {hoy_str}   HORA: {datetime.now(zona_mx).strftime('%H:%M')}\n"
-    t += f"CLIENTE: {cliente.upper()}\n"
-    if tipo == "venta": t += f"COBRO: {pago.upper()}\n"
-    t += "----------------------------\n\n"
+    t = "================================\n"
+    t += "           FARO CAFE\n"
+    t += "================================\n"
+    t += f"Fec: {hoy_str}   Hor: {datetime.now(zona_mx).strftime('%H:%M')}\n"
+    t += f"Cli: {cliente.upper()[:27]}\n"
+    if tipo == "venta": t += f"Cobro: {pago.upper()}\n"
+    t += "--------------------------------\n\n"
     
     for i in items:
-        # PRODUCTO GIGANTE Y DESTACADO
-        t += f" {i['cant']}x {i['prod'].upper()} ==\n"
-        # Notas resaltadas
+        t += f"{i['cant']}x {i['prod'].upper()}\n"
         if i['notas']:
-            t += f"   >> EXTRAS: {i['notas']}\n"
+            t += f"  > EXT: {i['notas'].replace(' [IMP]', '')}\n"
         if i.get('tiempo') == "🕒 Prog.":
-            t += f"   >> ENTREGAR A LAS: {i['hora']} HRS\n"
+            t += f"  > ENTREGA: {i['hora']} HRS\n"
         t += "\n"
         
-    t += "----------------------------\n"
+    t += "--------------------------------\n"
     if tipo == "venta":
         t += f"TOTAL: $ {total:.2f}\n"
     else:
         t += "TICKET DE PRODUCCION - COCINA\n"
-    t += "============================\n\n\n"
+    t += "================================\n\n\n"
     return t
 
 # ==========================================
@@ -147,13 +146,12 @@ MENU_BASE = {
     "Café": {"Vainilla": 25.0, "Avellana": 25.0, "Clásico": 25.0, "Crema irlandesa": 30.0, "Caramelo": 30.0, "Canela": 30.0, "Te": 25.0},
     "Platillos": {"Ensalada": 75.0, "Sandwich": 65.0, "Plato de Chilaquiles": 55.0, "Torta de Chilaquiles": 45.0}, 
     "Tortas": {},
-    "Panadería": {"Pan de Dulce": 25.0, "Telera": 5.0}    
+    "Panadería": {"Pan de Dulce": 25.0, "Telera": 5.0},
     "Bebidas Frías": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
     "Frappés": {"Fresa": 65.0, "Taro": 65.0, "Chai": 65.0, "Matcha": 65.0, "Rompope": 65.0, "Red Velvet": 65.0, "Pistache": 65.0, "Galleta": 65.0, "Mora": 65.0, "Cereza": 65.0, "Refresher Darks": 65.0, "Cafe": 65.0, "Moka": 65.0, "Oreo": 65.0, "Chocolate": 65.0},
-     "Esquimos": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
+    "Esquimos": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
     "Chamoyadas": {"Fresa": 65.0, "Mango": 65.0, "Temporada": 65.0},
     "Refreshers": {"Fresa": 55.0, "Cherry negra": 55.0, "Guayaba": 55.0, "Kiwi": 55.0},
-
 }
 
 def armar_nombre(cat, base):
@@ -199,12 +197,20 @@ if st.session_state.admin_mode: pestanas.extend(["⚙️ Admin", "💸 Gastos"])
 tabs = st.tabs(pestanas)
 
 # ==========================================
-# VISOR GLOBAL DE IMPRESIÓN (Aparece arriba si hay ticket pendiente)
+# VISOR GLOBAL DE IMPRESIÓN CON AUTO-REDIRECT
 # ==========================================
 if st.session_state.ticket_imprimir:
     url_impresion = "rawbt:" + urllib.parse.quote(st.session_state.ticket_imprimir)
     st.markdown(f'<a href="{url_impresion}" target="_blank" class="btn-imprimir">🖨️ TOCAR AQUÍ PARA IMPRIMIR TICKET EN LA ZEBRA</a>', unsafe_allow_html=True)
-    if st.button("✅ Ocultar Botón de Impresión", use_container_width=True):
+    
+    # Auto-redirección silenciosa usando componentes de HTML
+    components.html(f'''
+        <script>
+            window.parent.location.href = "{url_impresion}";
+        </script>
+    ''', height=0)
+
+    if st.button("✅ Ya se imprimió / Ocultar botón", use_container_width=True):
         st.session_state.ticket_imprimir = None
         st.rerun()
     st.divider()
@@ -355,7 +361,7 @@ with tabs[0]:
                     st.session_state.cart = []; leer.clear(); st.success("¡Registrado!"); st.rerun()
         
         with c_e2:
-            if st.button("🖨️ GUARDAR E IMPRIMIR TICKET", type="primary", use_container_width=True):
+            if st.button("🖨️ GUARDAR E IMPRIMIR", type="primary", use_container_width=True):
                 if not cliente.strip() and pago == "Pendiente" and not st.session_state.admin_mode: st.warning("Nombre obligatorio para deuda.")
                 else:
                     nom_final = cliente.strip() if cliente.strip() else "Mostrador"
@@ -385,7 +391,7 @@ with tabs[0]:
                     st.session_state.cart = []; leer.clear(); st.rerun()
 
 # ==========================================
-# PESTAÑA 2: CAJA RÁPIDA (Bebidas Directas)
+# PESTAÑA 2: CAJA RÁPIDA
 # ==========================================
 with tabs[1]:
     st.header("⚡ Caja Rápida")
@@ -445,7 +451,7 @@ with tabs[1]:
                     st.session_state.puesto_cart = []; leer.clear(); st.rerun()
 
 # ==========================================
-# PESTAÑA 3: COCINA CON TEMPORIZADOR Y TICKET
+# PESTAÑA 3: COCINA 
 # ==========================================
 with tabs[2]:
     st.header("👨‍🍳 Monitor de Producción")
@@ -456,12 +462,24 @@ with tabs[2]:
         pedidos_cocina.sort(key=lambda x: (x[1][4] != "Inmediato", x[1][5])) 
         
         if pedidos_cocina:
-            # BOTON GIGANTE PARA IMPRIMIR COMANDAS DE COCINA
-            if st.button("🖨️ IMPRIMIR ESTAS COMANDAS EN LA ZEBRA", type="primary", use_container_width=True):
+            # BOTÓN DE IMPRIMIR COCINA (Con exclusión de los que ya se imprimieron)
+            if st.button("🖨️ IMPRIMIR COMANDAS NUEVAS EN LA ZEBRA", type="primary", use_container_width=True):
                 items_cocina = []
-                for _, f in pedidos_cocina: items_cocina.append({"prod": f[1], "cant": 1, "notas": f[3], "tiempo": ("🕒 Prog." if f[4]!="Inmediato" else "⚡ Ahora"), "hora": f[5]})
-                st.session_state.ticket_imprimir = generar_texto_ticket("COCINA", "N/A", items_cocina, 0, "cocina")
-                st.rerun()
+                actualizaciones_hoja = []
+                for i_fila, f_data in pedidos_cocina:
+                    # Si no tiene la marca invisible [IMP], lo manda imprimir
+                    if "[IMP]" not in f_data[3]:
+                        items_cocina.append({"prod": f_data[1], "cant": 1, "notas": f_data[3].replace(" [IMP]", "").replace("[IMP]", ""), "tiempo": ("🕒 Prog." if f_data[4]!="Inmediato" else "⚡ Ahora"), "hora": f_data[5]})
+                        nuevo_txt_notas = f_data[3] + " [IMP]" if f_data[3] else "[IMP]"
+                        actualizaciones_hoja.append({"row": i_fila, "val": nuevo_txt_notas})
+                
+                if items_cocina:
+                    ws_ops = sh.worksheet("Operaciones")
+                    for u in actualizaciones_hoja: ws_ops.update_cell(u["row"], 4, u["val"])
+                    st.session_state.ticket_imprimir = generar_texto_ticket("COCINA", "N/A", items_cocina, 0, "cocina")
+                    st.cache_data.clear(); st.rerun()
+                else:
+                    st.info("⚠️ Todas las comandas actuales ya fueron impresas previamente.")
                 
             for i, f in pedidos_cocina:
                 urgente = False
@@ -473,12 +491,13 @@ with tabs[2]:
                     except: pass
                     
                 css_clase = "card-urgente" if urgente else "card-programado"
+                notas_limpias = f[3].replace(" [IMP]", "").replace("[IMP]", "")
                 
                 st.markdown(f'<div class="card {css_clase}">', unsafe_allow_html=True)
                 if urgente: st.markdown("<h2 style='color:#D93025; font-weight:900;'>🔥 ENTREGAR AHORA (INMEDIATO)</h2>", unsafe_allow_html=True)
                 else: st.markdown(f"<h2 style='color:#005A9E; font-weight:800;'>🕒 PREPARAR PARA: {f[5]} HRS</h2>", unsafe_allow_html=True)
                     
-                st.markdown(f"<h3>{f[1]}</h3><p><b>Cliente:</b> {f[0]}</p><p style='font-size:22px; font-weight:bold;'>Extras/Notas: <span style='color:#D93025;'><i>{f[3]}</i></span></p>", unsafe_allow_html=True)
+                st.markdown(f"<h3>{f[1]}</h3><p><b>Cliente:</b> {f[0]}</p><p style='font-size:22px; font-weight:bold;'>Extras/Notas: <span style='color:#D93025;'><i>{notas_limpias}</i></span></p>", unsafe_allow_html=True)
                 
                 c_listo, c_canc = st.columns([3,1])
                 with c_listo:
@@ -502,7 +521,7 @@ with tabs[3]:
         for i, f in enumerate(ops[1:], start=2):
             if len(f) > 8 and f[8] == hoy_str and f[6] == "Listo":
                 hay_listos = True
-                st.success(f"**{f[1]}** | Para: {f[0]} | Notas: {f[3]}")
+                st.success(f"**{f[1]}** | Para: {f[0]} | Notas: {f[3].replace(' [IMP]', '').replace('[IMP]', '')}")
                 if st.button("🚀 Entregado al cliente", key=f"ent_{i}", type="primary"):
                     sh.worksheet("Operaciones").update_cell(i, 7, "Entregado"); leer.clear(); st.rerun()
     if not hay_listos: st.write("No hay órdenes esperando.")
