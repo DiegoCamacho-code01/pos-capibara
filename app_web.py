@@ -6,138 +6,54 @@ import re
 from datetime import datetime, timedelta, timezone
 
 # ==========================================
-# 1. CONFIGURACIÓN VISUAL Y CSS ERGONÓMICO (Bordes 20px, Sin Puntos)
+# 1. CONFIGURACIÓN VISUAL Y CSS ERGONÓMICO
 # ==========================================
 st.set_page_config(page_title="POS Faro Café", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
     /* Escalado global y bordes ultra redondeados */
-    html, body, [class*="css"], .stMarkdown, p, span, label, div {
-        font-size: 19px !important;
-    }
+    html, body, [class*="css"], .stMarkdown, p, span, label, div { font-size: 19px !important; }
     h1 { font-size: 32px !important; font-weight: 800 !important; }
     h2 { font-size: 26px !important; font-weight: 700 !important; }
     h3 { font-size: 22px !important; font-weight: 700 !important; }
     
     /* Botones de producto (Gigantes, redondeados) */
     .prod-container div.stButton > button { 
-        min-height: 110px !important; 
-        border-radius: 20px !important; 
-        border: 2px solid #005A9E !important; 
-        font-weight: 700 !important; 
-        background-color: #FFFFFF !important; 
-        color: #002244 !important; 
-        font-size: 21px !important; 
-        box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
-        white-space: pre-wrap !important;
-        line-height: 1.25 !important;
+        min-height: 110px !important; border-radius: 20px !important; border: 2px solid #005A9E !important; 
+        font-weight: 700 !important; background-color: #FFFFFF !important; color: #002244 !important; 
+        font-size: 21px !important; box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
+        white-space: pre-wrap !important; line-height: 1.25 !important;
     }
-    
-    .prod-container div.stButton > button:hover { 
-        border-color: #003B66 !important; 
-        background-color: #F0F7FF !important; 
-    }
-    
-    .prod-container div.stButton > button:active { 
-        background-color: #CCE5FF !important; 
-        transform: scale(0.95) !important; 
-    }
+    .prod-container div.stButton > button:hover { border-color: #003B66 !important; background-color: #F0F7FF !important; }
+    .prod-container div.stButton > button:active { background-color: #CCE5FF !important; transform: scale(0.95) !important; }
 
-    /* Transformar Radios en Botones Pastilla (Ocultar el punto rojo) */
-    div[role="radiogroup"] {
-        gap: 12px !important;
-        flex-wrap: wrap;
-    }
+    /* Transformar Radios en Botones Pastilla */
+    div[role="radiogroup"] { gap: 12px !important; flex-wrap: wrap; }
     div[role="radiogroup"] label {
-        background-color: #F8FBFF !important;
-        border: 2px solid #005A9E !important;
-        border-radius: 20px !important;
-        padding: 10px 20px !important;
-        font-weight: 700 !important;
-        cursor: pointer !important;
-        display: flex !important;
-        justify-content: center !important;
-        align-items: center !important;
+        background-color: #F8FBFF !important; border: 2px solid #005A9E !important; border-radius: 20px !important;
+        padding: 10px 20px !important; font-weight: 700 !important; cursor: pointer !important;
+        display: flex !important; justify-content: center !important; align-items: center !important;
     }
-    /* Ocultar el círculo nativo */
-    div[role="radiogroup"] label input, 
-    div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] pre {
-        display: none !important;
-    }
-    div[role="radiogroup"] .st-b7, div[role="radiogroup"] .st-b8, div[role="radiogroup"] svg {
-        display: none !important;
-    }
-    /* Efecto de seleccionado para el radiogroup */
-    div[role="radiogroup"] label[data-baseweb="radio"][aria-checked="true"] {
-        background-color: #005A9E !important;
-    }
-    div[role="radiogroup"] label[data-baseweb="radio"][aria-checked="true"] div {
-        color: #FFFFFF !important;
-    }
+    div[role="radiogroup"] label input, div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] pre, div[role="radiogroup"] .st-b7, div[role="radiogroup"] .st-b8, div[role="radiogroup"] svg { display: none !important; }
+    div[role="radiogroup"] label[data-baseweb="radio"][aria-checked="true"] { background-color: #005A9E !important; }
+    div[role="radiogroup"] label[data-baseweb="radio"][aria-checked="true"] div { color: #FFFFFF !important; }
 
-    /* Botones primarios (Acciones grandes) */
+    /* Botones primarios */
     div.stButton > button[kind="primary"] { 
-        background-color: #005A9E !important; 
-        color: white !important; 
-        border: none !important; 
-        font-size: 22px !important;
-        min-height: 85px !important;
-        font-weight: 800 !important;
-        border-radius: 20px !important;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2) !important;
+        background-color: #005A9E !important; color: white !important; border: none !important; font-size: 22px !important;
+        min-height: 85px !important; font-weight: 800 !important; border-radius: 20px !important; box-shadow: 0 4px 8px rgba(0,0,0,0.2) !important;
     }
+    .cat-container div.stButton > button { min-height: 65px !important; border-radius: 15px !important; font-size: 20px !important; font-weight: 700 !important; box-shadow: 0 2px 5px rgba(0,0,0,0.05) !important; }
 
-    /* Estilo de botones de Categoría */
-    .cat-container div.stButton > button {
-        min-height: 65px !important;
-        border-radius: 15px !important;
-        font-size: 20px !important;
-        font-weight: 700 !important;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05) !important;
-    }
+    /* Tarjetas */
+    .card { background-color: #FFFFFF; padding: 20px; border-radius: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border: 2px solid #E1E4E8; }
+    .card-urgente { border: 4px solid #D93025; background-color: #FFF2F2; }
+    .card-programado { border: 4px solid #005A9E; background-color: #F0F7FF; }
+    .card-personalizar { border: 4px solid #FF8C00; background-color: #FFFDF0; border-radius: 20px; padding: 24px; margin-bottom: 20px; }
+    .card-borrador { background-color: #F8FBFF; border: 3px dashed #005A9E; padding: 20px; border-radius: 20px; margin-bottom: 20px; }
 
-    /* Tarjetas de cocina, personalización y borrador (20px radius) */
-    .card { 
-        background-color: #FFFFFF; 
-        padding: 20px; 
-        border-radius: 20px; 
-        margin-bottom: 20px; 
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08); 
-        border: 2px solid #E1E4E8;
-    }
-    .card-urgente { 
-        border: 4px solid #D93025; 
-        background-color: #FFF2F2; 
-    }
-    .card-programado {
-        border: 4px solid #005A9E; 
-        background-color: #F0F7FF;
-    }
-    .card-personalizar {
-        border: 4px solid #FF8C00;
-        background-color: #FFFDF0;
-        border-radius: 20px;
-        padding: 24px;
-        margin-bottom: 20px;
-    }
-    .card-borrador {
-        background-color: #F8FBFF;
-        border: 3px dashed #005A9E;
-        padding: 20px;
-        border-radius: 20px;
-        margin-bottom: 20px;
-    }
-
-    /* Cabecera fija de categorías */
-    .sticky-header { 
-        position: sticky; 
-        top: 0; 
-        background-color: white; 
-        z-index: 999; 
-        padding: 10px 0 15px 0; 
-        border-bottom: 2px solid #E1E4E8; 
-    }
+    .sticky-header { position: sticky; top: 0; background-color: white; z-index: 999; padding: 10px 0 15px 0; border-bottom: 2px solid #E1E4E8; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -150,7 +66,7 @@ fin_semana = inicio_semana + timedelta(days=6)
 semana_str = f"{inicio_semana.strftime('%d/%m')} al {fin_semana.strftime('%d/%m')}"
 
 # ==========================================
-# 2. CONEXIÓN Y LECTURA
+# 2. CONEXIÓN Y LECTURA AUTOMÁTICA
 # ==========================================
 @st.cache_resource
 def conectar():
@@ -166,41 +82,45 @@ sh = conectar()
 def leer():
     if not sh: return [], [], [], [], []
     try: 
-        ops = sh.worksheet("Operaciones").get_all_values()
-        inv = sh.worksheet("Inventario").get_all_values()
-        deu = sh.worksheet("Deudas").get_all_values()
-        hist = sh.worksheet("Historial").get_all_values()
-        try: gas = sh.worksheet("Gastos").get_all_values()
-        except: gas = []
-        return ops, inv, deu, hist, gas
-    except Exception as e: 
-        st.error(f"Error de lectura: {e}")
-        return [], [], [], [], []
+        return sh.worksheet("Operaciones").get_all_values(), sh.worksheet("Inventario").get_all_values(), sh.worksheet("Deudas").get_all_values(), sh.worksheet("Historial").get_all_values(), (sh.worksheet("Gastos").get_all_values() if "Gastos" in [w.title for w in sh.worksheets()] else [])
+    except: return [], [], [], [], []
 
 ops, inv, deu, hist, gas = leer()
+
+# AUTO-DESPACHO DE AGENDADOS PARA HOY
+if len(ops) > 1:
+    ops_to_update = []
+    for i, f in enumerate(ops[1:], start=2):
+        if len(f) > 8 and f[6] == "Pendiente" and f[8] == hoy_str:
+            nuevo_estado = "Preparando" if f[2] == "Cocina" else "Entregado"
+            ops_to_update.append({"row": i, "val": nuevo_estado})
+    
+    if ops_to_update:
+        try:
+            ws_ops = sh.worksheet("Operaciones")
+            for u in ops_to_update: ws_ops.update_cell(u["row"], 7, u["val"])
+            st.cache_data.clear()
+            ops, inv, deu, hist, gas = leer()
+        except: pass
 
 # ==========================================
 # 3. MEMORIA DE ESTADOS
 # ==========================================
 if 'cajero' not in st.session_state:
-    if st.query_params.get("u", ""):
-        st.session_state.cajero = st.query_params.get("u", "")
+    if st.query_params.get("u", ""): st.session_state.cajero = st.query_params.get("u", "")
     else:
         st.title("Control de Acceso")
-        st.write("Identificación requerida para el registro de operaciones.")
-        st.info("Nota: Guarda esta página en tu pantalla de inicio después de acceder.")
+        st.info("Guarda esta página en tu pantalla de inicio después de acceder.")
         nom = st.text_input("Nombre del Operador/Cajero:")
-        if st.button("Iniciar Turno", type="primary"):
-            if nom.strip():
-                st.query_params["u"] = nom.strip()
-                st.session_state.cajero = nom.strip()
-                st.rerun()
+        if st.button("Iniciar Turno", type="primary") and nom.strip():
+            st.query_params["u"] = nom.strip()
+            st.session_state.cajero = nom.strip()
+            st.rerun()
         st.stop()
 
-if 'cart' not in st.session_state: st.session_state.cart = []
-if 'puesto_cart' not in st.session_state: st.session_state.puesto_cart = []
+for s in ['cart', 'puesto_cart', 'cat_apagadas']: 
+    if s not in st.session_state: st.session_state[s] = []
 if 'admin_mode' not in st.session_state: st.session_state.admin_mode = False
-if 'cat_apagadas' not in st.session_state: st.session_state.cat_apagadas = []
 if 'borrador_voz' not in st.session_state: st.session_state.borrador_voz = None
 if 'prod_edit' not in st.session_state: st.session_state.prod_edit = None
 if 'cat_activa' not in st.session_state: st.session_state.cat_activa = "Café"
@@ -237,19 +157,11 @@ fila_producto_map = {}
 if len(inv) > 1:
     for row_idx, row in enumerate(inv[1:], start=2):
         if len(row) >= 4:
-            prod = row[0].strip()
-            stock_str = row[1].strip() if len(row) > 1 else ""
-            cat = row[2].strip() if len(row) > 2 else "General"
-            precio_str = row[3].strip() if len(row) > 3 else "0"
-            activo = row[4].strip().lower() if len(row) >= 5 else "activo"
-
-            fila_producto_map[prod] = row_idx
-            if activo == "activo":
-                if "Tortas" in cat:
-                    try: dict_inv[prod] = int(stock_str)
-                    except: dict_inv[prod] = 0
+            prod, cat, precio_str = row[0].strip(), row[2].strip() if len(row) > 2 else "General", row[3].strip() if len(row) > 3 else "0"
+            if (row[4].strip().lower() if len(row) >= 5 else "activo") == "activo":
+                fila_producto_map[prod] = row_idx
+                if "Tortas" in cat: dict_inv[prod] = int(row[1].strip() if len(row) > 1 else 0)
                 else: dict_inv[prod] = None
-
                 if cat not in MENU: MENU[cat] = {}
                 try: MENU[cat][prod] = float(precio_str)
                 except: MENU[cat][prod] = 0.0
@@ -258,152 +170,94 @@ if not MENU.get("Tortas") and "Tortas" in MENU: del MENU["Tortas"]
 for c_apagada in st.session_state.cat_apagadas:
     if c_apagada in MENU: del MENU[c_apagada]
 
-clientes_historicos = []
-if len(ops) > 1: clientes_historicos.extend([f[0] for f in ops[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
-if len(deu) > 1: clientes_historicos.extend([f[0] for f in deu[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
-clientes_unicos = sorted(list(set(clientes_historicos)))
-
-TODOS_LOS_PRODUCTOS = {}
-for cat_k, p_dict in MENU.items():
-    for p_k, p_v in p_dict.items(): TODOS_LOS_PRODUCTOS[p_k] = {"precio": p_v, "cat": cat_k}
+clientes_unicos = sorted(list(set([f[0] for f in ops[1:] if len(f)>0 and f[0] not in ["", "Mostrador"]] + [f[0] for f in deu[1:] if len(f)>0 and f[0] not in ["", "Mostrador"]])))
+TODOS_LOS_PRODUCTOS = {p_k: {"precio": p_v, "cat": cat_k} for cat_k, p_dict in MENU.items() for p_k, p_v in p_dict.items()}
 LISTA_NOMBRES_PRODUCTOS = sorted(list(TODOS_LOS_PRODUCTOS.keys()))
 
 if st.session_state.cat_activa not in MENU and len(MENU) > 0: st.session_state.cat_activa = list(MENU.keys())[0]
 
 # ==========================================
-# 5. MOTOR DE RECONOCIMIENTO (VOZ)
+# 5. MOTOR DE VOZ
 # ==========================================
 def procesar_voz_pedido(texto_in):
     t = texto_in.lower().strip()
     pago = "Pendiente" if any(x in t for x in ["pendiente", "a cuenta", "debe", "deuda", "despues", "luego", "apunta", "anot"]) else "Pagado"
     
-    cliente = ""
-    for c in clientes_unicos:
-        if c.lower() in t:
-            cliente = c
-            break
+    cliente = next((c for c in clientes_unicos if c.lower() in t), "")
     if not cliente:
         m_cli = re.search(r'(?:para|a nombre de)\s+([a-záéíóúñ]+)', t)
-        if m_cli:
-            cand = m_cli.group(1).capitalize()
-            if cand.lower() not in ["las", "la", "el", "los", "hoy", "llevar", "cocina", "mañana"]: cliente = cand
+        if m_cli and m_cli.group(1).lower() not in ["las", "la", "el", "los", "hoy", "llevar", "cocina", "mañana"]: cliente = m_cli.group(1).capitalize()
 
-    tiempo = "⚡ Ahora"
-    hora_fin = "Ahora"
+    tiempo, hora_fin, dia_tipo = "⚡ Ahora", "Ahora", ("Mañana" if "mañana" in t else "Hoy")
     m_hora = re.search(r'(?:a las|para las)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|de la tarde|de la mañana)?', t)
     if m_hora:
         tiempo = "🕒 Prog."
-        h = int(m_hora.group(1))
-        m = m_hora.group(2) if m_hora.group(2) else "00"
-        ampm = m_hora.group(3)
-        if ampm in ["pm", "de la tarde"] and h < 12: h += 12
-        hora_fin = f"{h:02d}:{m}"
+        h = int(m_hora.group(1)) + (12 if m_hora.group(3) in ["pm", "de la tarde"] and int(m_hora.group(1)) < 12 else 0)
+        hora_fin = f"{h:02d}:{m_hora.group(2) if m_hora.group(2) else '00'}"
 
-    dia_tipo = "Mañana" if "mañana" in t else "Hoy"
-    items_extraidos = []
-    num_map = {"un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5}
-    
-    notas_auto = []
+    items_extraidos, notas_auto = [], []
     if "sin azucar" in t or "sin azúcar" in t: notas_auto.append("Sin azúcar")
     if "deslactosada" in t: notas_auto.append("Leche deslactosada")
     if "almendra" in t: notas_auto.append("Leche de Almendra")
-    txt_notas = ", ".join(notas_auto)
-
+    
     for p_nom, p_info in TODOS_LOS_PRODUCTOS.items():
-        kw = p_nom.lower()
-        if len(kw) >= 3 and re.search(r'\b' + re.escape(kw) + r'\b', t):
+        if len(p_nom) >= 3 and re.search(r'\b' + re.escape(p_nom.lower()) + r'\b', t):
             cant = 1
-            m_cant = re.search(r'(\d+|un|uno|una|dos|tres|cuatro|cinco)\s+(?:de\s+)?(?:cafes?\s+|bebidas?\s+)?' + re.escape(kw), t)
-            if m_cant:
-                val = m_cant.group(1)
-                cant = int(val) if val.isdigit() else num_map.get(val, 1)
+            m_cant = re.search(r'(\d+|un|uno|una|dos|tres|cuatro|cinco)\s+(?:de\s+)?(?:cafes?\s+|bebidas?\s+)?' + re.escape(p_nom.lower()), t)
+            if m_cant: cant = int(m_cant.group(1)) if m_cant.group(1).isdigit() else {"un":1,"uno":1,"una":1,"dos":2,"tres":3,"cuatro":4,"cinco":5}.get(m_cant.group(1), 1)
 
-            dest = "Cocina" if p_info["cat"] == "Platillos" else "Entrega Directa"
-            precio_calc = p_info["precio"]
-            if "almendra" in t and p_info["cat"] in ["Frappés", "Esquimos", "Bebidas Frías", "Café"]: precio_calc += 10
-            
-            items_extraidos.append({
-                "prod": armar_nombre(p_info["cat"], p_nom),
-                "cant": cant,
-                "precio": precio_calc,
-                "notas": txt_notas,
-                "dest": dest,
-                "cat": p_info["cat"]
-            })
+            precio_calc = p_info["precio"] + (10 if "almendra" in t and p_info["cat"] in ["Frappés", "Esquimos", "Bebidas Frías", "Café"] else 0)
+            items_extraidos.append({"prod": armar_nombre(p_info["cat"], p_nom), "cant": cant, "precio": precio_calc, "notas": ", ".join(notas_auto), "dest": ("Cocina" if p_info["cat"] == "Platillos" else "Entrega Directa"), "cat": p_info["cat"]})
 
     return {"cliente": cliente, "pago": pago, "tiempo": tiempo, "hora_fin": hora_fin, "dia_tipo": dia_tipo, "items": items_extraidos, "texto_origen": texto_in}
 
 # ==========================================
-# 6. MENÚ LATERAL Y PESTAÑAS
+# 6. SIDEBAR Y TABS
 # ==========================================
 with st.sidebar:
     st.write(f"**Operador:** {st.session_state.cajero}")
-    st.divider()
-    pin = st.text_input("Credencial Admin:", type="password")
-    if pin == "1234":
-        st.session_state.admin_mode = True
-        st.success("Modo Administrador Autorizado")
+    if st.text_input("Credencial Admin:", type="password") == "1234": st.session_state.admin_mode = True
     else: st.session_state.admin_mode = False
 
 pestanas = ["🛒 Carrito", "⚡ Caja Rápida", "👨‍🍳 Cocina", "🚚 Entregas", "📅 Agendados", "💳 Pagos", "📦 Inventario"]
-if st.session_state.admin_mode: 
-    pestanas.append("⚙️ Administración")
-    pestanas.append("💸 Gastos (Nuevo)")
+if st.session_state.admin_mode: pestanas.extend(["⚙️ Admin", "💸 Gastos"])
 tabs = st.tabs(pestanas)
 
 # ==========================================
-# PESTAÑA 1: CARRITO PRINCIPAL (POP-UP y VOZ)
+# PESTAÑA 1: CARRITO (POP-UP y VOZ)
 # ==========================================
 with tabs[0]:
-    # --- MÓDULO DE VOZ ---
-    with st.expander("🎙️ TOMAR ORDEN POR VOZ / DICTADO RÁPIDO", expanded=False):
-        st.write("Presiona el micrófono del teclado de tu celular y dicta la orden:")
+    with st.expander("🎙️ TOMAR ORDEN POR VOZ", expanded=False):
         col_v1, col_v2 = st.columns([3, 1])
-        with col_v1: texto_voz = st.text_input("Dictado:", placeholder="Habla o escribe aquí...", label_visibility="collapsed", key="in_voz")
+        with col_v1: texto_voz = st.text_input("Dictado:", placeholder="Habla aquí...", label_visibility="collapsed", key="in_voz")
         with col_v2:
-            if st.button("⚡ Interpretar", use_container_width=True):
-                if texto_voz.strip():
-                    st.session_state.borrador_voz = procesar_voz_pedido(texto_voz)
-                    st.rerun()
+            if st.button("⚡ Interpretar", use_container_width=True) and texto_voz.strip():
+                st.session_state.borrador_voz = procesar_voz_pedido(texto_voz)
+                st.rerun()
 
-    # --- BORRADOR VOZ ---
     if st.session_state.borrador_voz:
         b = st.session_state.borrador_voz
-        st.markdown('<div class="card-borrador">', unsafe_allow_html=True)
-        st.markdown("### 📝 Confirmación de Orden (Revisa y Edita)")
-        st.info(f"Escuchado: *\"{b.get('texto_origen', '')}\"*")
-
+        st.markdown('<div class="card-borrador"><h3>📝 Borrador de Voz</h3>', unsafe_allow_html=True)
         c_b1, c_b2 = st.columns(2)
         with c_b1:
-            cli_actual = b["cliente"]
-            opc_idx = ([""] + clientes_unicos).index(cli_actual) if cli_actual in clientes_unicos else 0
-            sel_cli = st.selectbox("Cliente:", [""] + clientes_unicos, index=opc_idx, key="bv_cli_sel")
+            sel_cli = st.selectbox("Cliente:", [""] + clientes_unicos, index=([""] + clientes_unicos).index(b["cliente"]) if b["cliente"] in clientes_unicos else 0, key="bv_cli_sel")
             b["cliente"] = st.text_input("Nombre Cliente:", value=(sel_cli if sel_cli else b["cliente"]), key="bv_cli_txt")
-        with c_b2:
-            pago_idx = 1 if b["pago"] == "Pendiente" else 0
-            b["pago"] = st.radio("Cobro:", ["Pagado", "Pendiente"], index=pago_idx, horizontal=True, key="bv_pago")
+        with c_b2: b["pago"] = st.radio("Cobro:", ["Pagado", "Pendiente"], index=1 if b["pago"] == "Pendiente" else 0, horizontal=True, key="bv_pago")
 
         c_b3, c_b4 = st.columns(2)
         with c_b3:
-            t_idx = 1 if b["tiempo"] == "🕒 Prog." else 0
-            b["tiempo"] = st.radio("Tiempo Gral:", ["⚡ Ahora", "🕒 Prog."], index=t_idx, horizontal=True, key="bv_tiempo")
-            if b["tiempo"] == "🕒 Prog.": b["hora_fin"] = st.text_input("Hora entrega:", value=b["hora_fin"], key="bv_hora")
+            b["tiempo"] = st.radio("Tiempo Gral:", ["⚡ Ahora", "🕒 Prog."], index=1 if b["tiempo"] == "🕒 Prog." else 0, horizontal=True, key="bv_tiempo")
+            if b["tiempo"] == "🕒 Prog.": b["hora_fin"] = st.text_input("Hora:", value=b["hora_fin"], key="bv_hora")
             else: b["hora_fin"] = "Ahora"
-        with c_b4:
-            d_idx = 1 if b["dia_tipo"] == "Mañana" else 0
-            b["dia_tipo"] = st.radio("Día:", ["Hoy", "Mañana"], index=d_idx, horizontal=True, key="bv_dia")
+        with c_b4: b["dia_tipo"] = st.radio("Día:", ["Hoy", "Mañana"], index=1 if b["dia_tipo"] == "Mañana" else 0, horizontal=True, key="bv_dia")
 
-        st.write("---")
-        st.write("**Productos detectados:**")
-        tot_borrador = 0
-        eliminar_idx = None
+        tot_borrador, eliminar_idx = 0, None
         for idx, item in enumerate(b["items"]):
             cb1, cb2, cb3, cb4 = st.columns([3, 1, 2, 1])
             with cb1: st.write(f"**{item['prod']}**")
             with cb2: item["cant"] = st.number_input("Cant:", min_value=1, value=item.get("cant", 1), key=f"bc_{idx}")
             with cb3: item["notas"] = st.text_input("Notas:", value=item.get("notas", ""), key=f"bn_{idx}")
             with cb4:
-                st.write("")
                 if st.button("🗑️", key=f"bdel_{idx}"): eliminar_idx = idx
             tot_borrador += (item["precio"] * item["cant"])
 
@@ -411,16 +265,13 @@ with tabs[0]:
             b["items"].pop(eliminar_idx)
             st.rerun()
 
-        st.write(f"### Total Orden Voz: ${tot_borrador}")
         col_b_desc, col_b_proc = st.columns(2)
         with col_b_desc:
-            if st.button("❌ Descartar Borrador", use_container_width=True):
-                st.session_state.borrador_voz = None
-                st.rerun()
+            if st.button("❌ Descartar", use_container_width=True): st.session_state.borrador_voz = None; st.rerun()
         with col_b_proc:
-            if st.button("✅ PROCESAR ORDEN", type="primary", use_container_width=True):
-                if not b["items"]: st.warning("No hay productos.")
-                elif not b["cliente"].strip() and b["pago"] == "Pendiente": st.warning("Falta nombre para deuda.")
+            if st.button("✅ PROCESAR", type="primary", use_container_width=True):
+                if not b["items"]: st.warning("Vacío.")
+                elif not b["cliente"].strip() and b["pago"] == "Pendiente": st.warning("Falta nombre.")
                 else:
                     nom_f = b["cliente"].strip() if b["cliente"].strip() else "Mostrador"
                     fecha_f = (hoy_obj + timedelta(days=1)).strftime("%d/%m/%Y") if b["dia_tipo"] == "Mañana" else hoy_str
@@ -431,48 +282,35 @@ with tabs[0]:
                             est = "Pendiente" if b["dia_tipo"] != "Hoy" or b["tiempo"] != "⚡ Ahora" else ("Preparando" if i["dest"] == "Cocina" else "Entregado")
                             sh.worksheet("Operaciones").append_row([nom_f, i['prod'], i["dest"], i['notas'], b["tiempo"], h_r, est, tot_borrador if (i == b["items"][0] and _ == 0) else 0, fecha_f, st.session_state.cajero])
 
-                    if b["pago"] == "Pendiente":
-                        sh.worksheet("Deudas").append_row([nom_f, "Deuda", tot_borrador, ", ".join([f"{i['cant']}x {i['prod']}" for i in b["items"]]), hoy_str])
-
+                    if b["pago"] == "Pendiente": sh.worksheet("Deudas").append_row([nom_f, "Deuda", tot_borrador, ", ".join([f"{i['cant']}x {i['prod']}" for i in b["items"]]), hoy_str])
                     st.session_state.borrador_voz = None
                     leer.clear()
-                    st.success("¡Procesado exitosamente!")
                     st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # --- POP-UP OPCIÓN A (PERSONALIZACIÓN) ---
+    # --- POP-UP OPCIÓN A (EXCLUYENDO CAFÉ) ---
     if st.session_state.prod_edit:
         pe = st.session_state.prod_edit
         st.markdown(f'<div class="card-personalizar"><h2>⚙️ {armar_nombre(pe["cat"], pe["nombre"])}</h2>', unsafe_allow_html=True)
         
-        if st.button("⚡ AGREGAR CLÁSICO (Saltar Preguntas)", type="primary", use_container_width=True, key="btn_saltar"):
+        if st.button("⚡ AGREGAR CLÁSICO (Saltar)", type="primary", use_container_width=True, key="btn_saltar"):
             st.session_state.cart.append({"prod": armar_nombre(pe["cat"], pe["nombre"]), "precio": pe["precio"], "notas": "Clásico", "pan": False, "cat": pe["cat"], "tiempo": "⚡ Ahora", "hora": ""})
-            st.session_state.prod_edit = None
-            st.rerun()
+            st.session_state.prod_edit = None; st.rerun()
             
-        st.write("---")
-        st.write("**O Cambiar Opciones:**")
-        
         c_p1, c_p2 = st.columns(2)
-        notas_extra = []
-        precio_final = pe["precio"]
+        notas_extra, precio_final = [], pe["precio"]
         
-        if pe["cat"] in ["Frappés", "Esquimos", "Bebidas Frías", "Café"]:
+        if pe["cat"] in ["Frappés", "Esquimos", "Bebidas Frías"]:
             with c_p1:
                 leche = st.radio("Leche:", ["Entera", "Deslactosada", "Almendra (+$10)"], key="mod_leche")
-                if leche == "Almendra (+$10)": 
-                    precio_final += 10
-                    notas_extra.append("Almendra")
+                if leche == "Almendra (+$10)": precio_final += 10; notas_extra.append("Almendra")
                 elif leche == "Deslactosada": notas_extra.append("Deslactosada")
-                
                 chispas = st.radio("Chispas:", ["Con chispas", "Sin chispas"], key="mod_chispas")
                 if chispas == "Sin chispas": notas_extra.append("Sin chispas")
-                
             with c_p2:
                 if pe["cat"] == "Frappés":
                     crema = st.radio("Crema Batida:", ["Con crema", "Sin crema"], key="mod_crema")
                     if crema == "Sin crema": notas_extra.append("Sin crema")
-                
                 adorno = st.selectbox("Vaso Adornado:", ["Sin Adorno", "Lechera", "Hershey's", "Caramelo"], key="mod_adorno")
                 if adorno != "Sin Adorno": notas_extra.append(f"Vaso: {adorno}")
                 
@@ -482,58 +320,43 @@ with tabs[0]:
             perlas = st.radio("Perlas Explosivas:", ["Sin Perlas", "Con Perlas (+$10)"], key="mod_perl_cham")
             if banderilla == "Sin banderilla": notas_extra.append("Sin banderilla")
             if gomitas == "Sin gomitas": notas_extra.append("Sin gomitas")
-            if perlas == "Con Perlas (+$10)": 
-                precio_final += 10
-                notas_extra.append("Con Perlas Explosivas")
+            if perlas == "Con Perlas (+$10)": precio_final += 10; notas_extra.append("Con Perlas Explosivas")
             
         elif pe["cat"] == "Refreshers":
             perlas = st.radio("Extra:", ["Normal", "Perlas Explosivas (+$10)"], key="mod_perlas")
-            if perlas == "Perlas Explosivas (+$10)":
-                precio_final += 10
-                notas_extra.append("Con Perlas Explosivas")
+            if perlas == "Perlas Explosivas (+$10)": precio_final += 10; notas_extra.append("Con Perlas Explosivas")
                 
         st.write("")
         if st.button(f"✅ AGREGAR PERSONALIZADO (${precio_final})", use_container_width=True, key="btn_pers"):
-            str_notas = ", ".join(notas_extra)
-            st.session_state.cart.append({"prod": armar_nombre(pe["cat"], pe["nombre"]), "precio": precio_final, "notas": str_notas, "pan": False, "cat": pe["cat"], "tiempo": "⚡ Ahora", "hora": ""})
-            st.session_state.prod_edit = None
-            st.rerun()
+            st.session_state.cart.append({"prod": armar_nombre(pe["cat"], pe["nombre"]), "precio": precio_final, "notas": ", ".join(notas_extra), "pan": False, "cat": pe["cat"], "tiempo": "⚡ Ahora", "hora": ""})
+            st.session_state.prod_edit = None; st.rerun()
             
-        if st.button("❌ Cancelar", key="btn_canc_mod"):
-            st.session_state.prod_edit = None
-            st.rerun()
-            
+        if st.button("❌ Cancelar", key="btn_canc_mod"): st.session_state.prod_edit = None; st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
         st.stop() 
 
-    # --- CATEGORÍAS (BOTONES) ---
+    # --- CATEGORÍAS Y PRODUCTOS ---
     st.markdown('<div class="sticky-header"><div class="cat-container">', unsafe_allow_html=True)
     lista_cats = list(MENU.keys())
-    cols_por_fila = 3
-    for fila_i in range(0, len(lista_cats), cols_por_fila):
-        bloque = lista_cats[fila_i:fila_i + cols_por_fila]
-        col_c = st.columns(cols_por_fila)
-        for idx_col, cat_n in enumerate(bloque):
+    for fila_i in range(0, len(lista_cats), 3):
+        col_c = st.columns(3)
+        for idx_col, cat_n in enumerate(lista_cats[fila_i:fila_i+3]):
             with col_c[idx_col]:
                 if st.button(cat_n, key=f"btn_cat_{cat_n}", use_container_width=True, type="primary" if st.session_state.cat_activa == cat_n else "secondary"):
-                    st.session_state.cat_activa = cat_n
-                    st.rerun()
+                    st.session_state.cat_activa = cat_n; st.rerun()
     st.markdown('</div></div>', unsafe_allow_html=True)
 
-    # --- PRODUCTOS GRID ---
     st.markdown('<div class="prod-container">', unsafe_allow_html=True)
     c_prod = st.columns(2)
     for i, (n, p) in enumerate(MENU[st.session_state.cat_activa].items()):
-        stock = dict_inv.get(n, None)
-        btn_txt = f"{n}\n${p}"
-        agotado = False
+        stock, btn_txt, agotado = dict_inv.get(n, None), f"{n}\n${p}", False
         if stock is not None: 
             if stock <= 0: btn_txt += "\n(AGOTADO)"; agotado = True
             else: btn_txt += f"\n(Quedan {stock})"
             
         with c_prod[i%2]:
             if st.button(btn_txt, use_container_width=True, disabled=agotado, key=f"p_{st.session_state.cat_activa}_{n}"):
-                if st.session_state.cat_activa in ["Frappés", "Esquimos", "Chamoyadas", "Bebidas Frías", "Café", "Refreshers"]:
+                if st.session_state.cat_activa in ["Frappés", "Esquimos", "Chamoyadas", "Bebidas Frías", "Refreshers"]:
                     st.session_state.prod_edit = {"nombre": n, "cat": st.session_state.cat_activa, "precio": p}
                 else:
                     st.session_state.cart.append({"prod": armar_nombre(st.session_state.cat_activa, n), "precio": p, "notas": "", "pan": False, "cat": st.session_state.cat_activa, "tiempo": "⚡ Ahora", "hora": ""})
@@ -544,96 +367,85 @@ with tabs[0]:
         c_mot, c_mon = st.columns([3,1])
         with c_mot: mot = st.text_input("Concepto (Extra):")
         with c_mon: mon = st.number_input("$", step=5.0)
-        if st.button("Aplicar Extra", use_container_width=True):
-            if mot:
-                st.session_state.cart.append({"prod": f"Extra: {mot}", "precio": mon, "notas": "", "pan": False, "cat": "Extra", "tiempo": "⚡ Ahora", "hora": ""})
-                st.rerun()
+        if st.button("Aplicar Extra", use_container_width=True) and mot:
+            st.session_state.cart.append({"prod": f"Extra: {mot}", "precio": mon, "notas": "", "pan": False, "cat": "Extra", "tiempo": "⚡ Ahora", "hora": ""}); st.rerun()
 
     # --- RESUMEN DE ORDEN MANUAL ---
     if st.session_state.cart:
         st.divider()
-        st.subheader("🧾 Ticket / Resumen de Orden")
+        st.subheader("🧾 Ticket")
         total = 0
-        
         for idx, item in enumerate(st.session_state.cart):
             st.markdown(f"**▪ {item['prod']} (${item['precio']})**")
             
             c1, c2, c3 = st.columns([1.5, 1, 1])
             with c1: 
-                item['notas'] = st.text_input("Notas", value=item['notas'], key=f"cn_{idx}", label_visibility="collapsed", placeholder="Sin notas")
-            with c2:
-                item['tiempo'] = st.radio("Horario", ["⚡ Ahora", "🕒 Prog."], index=0 if item.get('tiempo', "⚡ Ahora") == "⚡ Ahora" else 1, horizontal=True, key=f"tr_{idx}", label_visibility="collapsed")
+                if "Chilaquiles" in item['prod']:
+                    cs1, cs2 = st.columns(2)
+                    with cs1: item['salsa'] = st.selectbox("Salsa", ["Verdes", "Rojos"], key=f"salsa_{idx}", label_visibility="collapsed")
+                    with cs2: item['pan'] = st.checkbox("Con Telera", key=f"cpan_{idx}")
+                else: item['notas'] = st.text_input("Notas", value=item['notas'], key=f"cn_{idx}", label_visibility="collapsed", placeholder="Notas")
+            
+            with c2: item['tiempo'] = st.radio("Horario", ["⚡ Ahora", "🕒 Prog."], index=0 if item.get('tiempo', "⚡ Ahora") == "⚡ Ahora" else 1, horizontal=True, key=f"tr_{idx}", label_visibility="collapsed")
             with c3:
                 if item['tiempo'] == "🕒 Prog.": item['hora'] = st.time_input("Hora", key=f"th_{idx}", label_visibility="collapsed").strftime("%H:%M")
                 else: item['hora'] = "Ahora"
                     
             if item.get('cat') == "Platillos": 
                 item['dest'] = "Cocina"
-                if "Chilaquiles" in item['prod'] and "Torta" not in item['prod']: item['pan'] = st.checkbox("Incluir Telera", key=f"cpan_{idx}")
-            else: item['dest'] = "Cocina" if st.checkbox("Mandar a Cocina", value=True, key=f"cd_{idx}") else "Entrega"
+                st.markdown("<p style='color:#D93025; font-size:14px; margin:0;'>👨‍🍳 Va a cocina por defecto</p>", unsafe_allow_html=True)
+            else: item['dest'] = "Cocina" if st.checkbox("Mandar a Cocina", value=False, key=f"cd_{idx}") else "Entrega Directa"
             
             total += item['precio']
             st.write("---")
             
         st.write(f"### Total a Cobrar: ${total}")
-        
-        st.write("**Datos del Cliente y Cobro:**")
         c_cli, c_pago = st.columns([2, 1])
         with c_cli:
             opc = st.selectbox("Buscar cliente:", [""] + clientes_unicos)
             cliente = st.text_input("Nombre / Referencia:", value=opc, placeholder="Escriba aquí...")
-        with c_pago:
-            pago = st.radio("Estado de Pago:", ["Pagado", "Pendiente"], index=0, horizontal=True)
+        with c_pago: pago = st.radio("Estado de Pago:", ["Pagado", "Pendiente"], index=0, horizontal=True)
 
-        st.write("")
         c_borrar, c_enviar = st.columns(2)
         with c_borrar:
-            if st.button("❌ Descartar Orden", use_container_width=True): 
-                st.session_state.cart = []
-                st.rerun()
+            if st.button("❌ Descartar Orden", use_container_width=True): st.session_state.cart = []; st.rerun()
         with c_enviar:
             if st.button("🚀 ENVIAR ORDEN", type="primary", use_container_width=True):
-                if not cliente.strip() and pago == "Pendiente" and not st.session_state.admin_mode: 
-                    st.warning("Se requiere nombre para registrar deuda.")
+                if not cliente.strip() and pago == "Pendiente" and not st.session_state.admin_mode: st.warning("Se requiere nombre para registrar deuda.")
                 else:
                     nom_final = cliente.strip() if cliente.strip() else "Mostrador"
-                    panes = sum(1 for i in st.session_state.cart if "telera" in i['prod'].lower() or "torta de chilaquiles" in i['prod'].lower() or i.get('pan', False))
+                    panes = sum(1 for i in st.session_state.cart if "telera" in i['prod'].lower() or i.get('pan', False))
                     
                     for i in st.session_state.cart:
                         t_est = "Preparando" if i['dest'] == "Cocina" else "Entregado"
                         t_bd = "Inmediato" if i['tiempo'] == "⚡ Ahora" else "Definir Hora"
                         h_bd = datetime.now(zona_mx).strftime("%H:%M") if t_bd == "Inmediato" else i['hora']
                         
-                        sh.worksheet("Operaciones").append_row([nom_final, i['prod'], i['dest'], i['notas'], t_bd, h_bd, t_est, total if i == st.session_state.cart[0] else 0, hoy_str, st.session_state.cajero])
+                        notas_final = i.get('notas', '')
+                        if "Chilaquiles" in i['prod']: notas_final = f"Salsa: {i.get('salsa', 'Verdes')} | Pan: {'Sí (Telera)' if i.get('pan') else 'No'} | " + notas_final
+                        
+                        sh.worksheet("Operaciones").append_row([nom_final, i['prod'], i['dest'], notas_final, t_bd, h_bd, t_est, total if i == st.session_state.cart[0] else 0, hoy_str, st.session_state.cajero])
                     
-                    if pago == "Pendiente": 
-                        resumen_productos = ", ".join([i['prod'] for i in st.session_state.cart])
-                        sh.worksheet("Deudas").append_row([nom_final, "Deuda", total, resumen_productos, hoy_str])
+                    if pago == "Pendiente": sh.worksheet("Deudas").append_row([nom_final, "Deuda", total, ", ".join([i['prod'] for i in st.session_state.cart]), hoy_str])
                     
                     if len(inv) > 1:
                         for idx, row in enumerate(inv[1:], start=2):
                             p_nom = row[0]
                             try: p_stock = int(row[1])
                             except: p_stock = 0
-                            
                             comprados = sum(1 for p in st.session_state.cart if p_nom in p['prod'])
                             if comprados > 0: sh.worksheet("Inventario").update_cell(idx, 2, p_stock - comprados)
                             if p_nom == "Telera" and panes > 0: sh.worksheet("Inventario").update_cell(idx, 2, p_stock - panes)
                                 
-                    st.session_state.cart = []
-                    leer.clear()
-                    st.success("¡Orden Procesada y Registrada!")
-                    st.rerun()
+                    st.session_state.cart = []; leer.clear(); st.success("¡Orden Procesada y Registrada!"); st.rerun()
 
 # ==========================================
 # PESTAÑA 2: CAJA RÁPIDA (Bebidas Directas)
 # ==========================================
 with tabs[1]:
-    st.header("⚡ Caja Rápida (Sin Cocina)")
+    st.header("⚡ Caja Rápida")
     categorias_puesto = [c for c in MENU.keys() if any(x in c for x in ["Café", "Frappés", "Bebidas", "Esquimos", "Chamoyadas", "Refreshers"])]
-    
-    if st.session_state.cat_puesto_activa not in categorias_puesto and categorias_puesto:
-        st.session_state.cat_puesto_activa = categorias_puesto[0]
+    if st.session_state.cat_puesto_activa not in categorias_puesto and categorias_puesto: st.session_state.cat_puesto_activa = categorias_puesto[0]
 
     if categorias_puesto:
         st.markdown('<div class="cat-container">', unsafe_allow_html=True)
@@ -641,8 +453,7 @@ with tabs[1]:
         for idx_cp, cat_p_nom in enumerate(categorias_puesto):
             with cols_p_cat[idx_cp % 3]:
                 if st.button(cat_p_nom, key=f"btn_cp_{cat_p_nom}", use_container_width=True, type="primary" if st.session_state.cat_puesto_activa == cat_p_nom else "secondary"):
-                    st.session_state.cat_puesto_activa = cat_p_nom
-                    st.rerun()
+                    st.session_state.cat_puesto_activa = cat_p_nom; st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="prod-container">', unsafe_allow_html=True)
@@ -651,8 +462,7 @@ with tabs[1]:
         for i, (n, p) in enumerate(MENU[cat_p].items()):
             with cols_p[i%2]:
                 if st.button(f"{n}\n${p}", use_container_width=True, key=f"puesto_{cat_p}_{n}"):
-                    st.session_state.puesto_cart.append({"prod": armar_nombre(cat_p, n), "precio": p, "notas": ""})
-                    st.rerun()
+                    st.session_state.puesto_cart.append({"prod": armar_nombre(cat_p, n), "precio": p, "notas": ""}); st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
                     
         if st.session_state.puesto_cart:
@@ -662,42 +472,27 @@ with tabs[1]:
                 c1, c2, c3 = st.columns([3, 1, 2])
                 with c1: st.write(f"▪ {item['prod']}")
                 with c2: st.write(f"${item['precio']}")
-                with c3: item['notas'] = st.text_input("Notas", key=f"pn_{idx}", label_visibility="collapsed", placeholder="Opcional")
+                with c3: item['notas'] = st.text_input("Notas", key=f"pn_{idx}", label_visibility="collapsed")
                 total_p += item['precio']
                 
             st.write(f"### Total Rápido: ${total_p}")
-            
             c_nom_p, c_pag_p = st.columns([1.5, 1])
-            with c_nom_p: 
-                cliente_p = st.text_input("Nombre cliente:", placeholder="Para llevar...")
-            with c_pag_p: 
-                pago_p = st.radio("Cobro:", ["Pagado", "Pendiente"], index=0, horizontal=True, key="pag_p")
+            with c_nom_p: cliente_p = st.text_input("Nombre cliente:", placeholder="Para llevar...")
+            with c_pag_p: pago_p = st.radio("Cobro:", ["Pagado", "Pendiente"], index=0, horizontal=True, key="pag_p")
             
-            st.write("")
             c_bp, c_ep = st.columns(2)
             with c_bp:
-                if st.button("❌ Descartar", key="b_puesto", use_container_width=True): 
-                    st.session_state.puesto_cart = []
-                    st.rerun()
+                if st.button("❌ Descartar", key="b_puesto", use_container_width=True): st.session_state.puesto_cart = []; st.rerun()
             with c_ep:
-                if st.button("🚀 COBRAR Y ENTREGAR", type="primary", use_container_width=True):
+                if st.button("🚀 COBRAR", type="primary", use_container_width=True):
                     nom_final_p = cliente_p.strip() if cliente_p.strip() else "Mostrador"
-                    h_real_p = datetime.now(zona_mx).strftime("%H:%M")
-                    
                     for i in st.session_state.puesto_cart:
-                        sh.worksheet("Operaciones").append_row([nom_final_p, i['prod'], "Entrega Directa", i['notas'], "Inmediato", h_real_p, "Entregado", total_p if i == st.session_state.puesto_cart[0] else 0, hoy_str, st.session_state.cajero])
-                    
-                    if pago_p == "Pendiente": 
-                        resumen_productos = ", ".join([i['prod'] for i in st.session_state.puesto_cart])
-                        sh.worksheet("Deudas").append_row([nom_final_p, "Deuda", total_p, resumen_productos, hoy_str])
-                    
-                    st.session_state.puesto_cart = []
-                    leer.clear()
-                    st.success("Transacción registrada rápido.")
-                    st.rerun()
+                        sh.worksheet("Operaciones").append_row([nom_final_p, i['prod'], "Entrega Directa", i['notas'], "Inmediato", datetime.now(zona_mx).strftime("%H:%M"), "Entregado", total_p if i == st.session_state.puesto_cart[0] else 0, hoy_str, st.session_state.cajero])
+                    if pago_p == "Pendiente": sh.worksheet("Deudas").append_row([nom_final_p, "Deuda", total_p, ", ".join([i['prod'] for i in st.session_state.puesto_cart]), hoy_str])
+                    st.session_state.puesto_cart = []; leer.clear(); st.rerun()
 
 # ==========================================
-# PESTAÑA 3: COCINA
+# PESTAÑA 3: COCINA CON TEMPORIZADOR
 # ==========================================
 with tabs[2]:
     st.header("👨‍🍳 Monitor de Producción")
@@ -707,329 +502,263 @@ with tabs[2]:
         pedidos_cocina = [ (i, f) for i, f in enumerate(ops[1:], start=2) if len(f) > 8 and f[8] == hoy_str and f[6] == "Preparando" and f[2] == "Cocina" ]
         pedidos_cocina.sort(key=lambda x: (x[1][4] != "Inmediato", x[1][5])) 
         
-        if pedidos_cocina:
-            for i, f in pedidos_cocina:
-                urgente = f[4] == "Inmediato"
-                css_clase = "card-urgente" if urgente else "card-programado"
+        for i, f in pedidos_cocina:
+            urgente = False
+            if f[4] == "Inmediato": urgente = True
+            else:
+                try: # Temporizador de 15 minutos
+                    dt_pedido = datetime.combine(hoy_obj, datetime.strptime(f[5], "%H:%M").time()).replace(tzinfo=zona_mx)
+                    if (dt_pedido - datetime.now(zona_mx)) <= timedelta(minutes=15): urgente = True
+                except: pass
                 
-                st.markdown(f'<div class="card {css_clase}">', unsafe_allow_html=True)
-                if urgente:
-                    st.markdown("<h2 style='color:#D93025; font-weight:900;'>🔥 ENTREGAR AHORA (INMEDIATO)</h2>", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"<h2 style='color:#005A9E; font-weight:800;'>🕒 PREPARAR PARA: {f[5]} HRS</h2>", unsafe_allow_html=True)
-                    
-                st.markdown(f"<h3>{f[1]}</h3><p><b>Cliente:</b> {f[0]}</p><p style='font-size:22px; font-weight:bold;'>Extras/Notas: <span style='color:#D93025;'><i>{f[3]}</i></span></p>", unsafe_allow_html=True)
+            css_clase = "card-urgente" if urgente else "card-programado"
+            
+            st.markdown(f'<div class="card {css_clase}">', unsafe_allow_html=True)
+            if urgente: st.markdown("<h2 style='color:#D93025; font-weight:900;'>🔥 ENTREGAR AHORA (INMEDIATO)</h2>", unsafe_allow_html=True)
+            else: st.markdown(f"<h2 style='color:#005A9E; font-weight:800;'>🕒 PREPARAR PARA: {f[5]} HRS</h2>", unsafe_allow_html=True)
                 
-                c_listo, c_canc = st.columns([3,1])
-                with c_listo:
-                    if st.button(f"✅ MARCAR COMO LISTO", key=f"l_{i}", use_container_width=True, type="primary"):
-                        sh.worksheet("Operaciones").update_cell(i, 7, "Listo")
-                        leer.clear()
-                        st.rerun()
-                with c_canc:
-                    if st.session_state.admin_mode:
-                        if st.button("🗑️ Cancelar", key=f"fc_{i}", use_container_width=True):
-                            sh.worksheet("Operaciones").delete_rows(i)
-                            leer.clear()
-                            st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("Cocina despejada. Sin órdenes activas.")
+            st.markdown(f"<h3>{f[1]}</h3><p><b>Cliente:</b> {f[0]}</p><p style='font-size:22px; font-weight:bold;'>Extras/Notas: <span style='color:#D93025;'><i>{f[3]}</i></span></p>", unsafe_allow_html=True)
+            
+            c_listo, c_canc = st.columns([3,1])
+            with c_listo:
+                if st.button(f"✅ MARCAR COMO LISTO", key=f"l_{i}", use_container_width=True, type="primary"):
+                    sh.worksheet("Operaciones").update_cell(i, 7, "Listo"); leer.clear(); st.rerun()
+            with c_canc:
+                if st.session_state.admin_mode:
+                    if st.button("🗑️ Cancelar", key=f"fc_{i}", use_container_width=True):
+                        sh.worksheet("Operaciones").delete_rows(i); leer.clear(); st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.info("Cocina despejada.")
 
 # ==========================================
 # PESTAÑA 4: ENTREGAS
 # ==========================================
 with tabs[3]:
     st.header("🚚 Entregas Pendientes")
+    hay_listos = False
     if len(ops) > 1:
-        hay_listos = False
         for i, f in enumerate(ops[1:], start=2):
             if len(f) > 8 and f[8] == hoy_str and f[6] == "Listo":
                 hay_listos = True
                 st.success(f"**{f[1]}** | Para: {f[0]} | Notas: {f[3]}")
                 if st.button("🚀 Entregado al cliente", key=f"ent_{i}", type="primary"):
-                    sh.worksheet("Operaciones").update_cell(i, 7, "Entregado")
-                    leer.clear()
-                    st.rerun()
-        if not hay_listos: st.write("No hay órdenes esperando entrega.")
+                    sh.worksheet("Operaciones").update_cell(i, 7, "Entregado"); leer.clear(); st.rerun()
+    if not hay_listos: st.write("No hay órdenes esperando.")
 
 # ==========================================
-# PESTAÑA 5: AGENDADOS
+# PESTAÑA 5: AGENDADOS (FORMULARIO Y SECCIONES)
 # ==========================================
 with tabs[4]:
-    st.header("📅 Programación de Órdenes a Futuro")
+    st.header("📅 Agenda de Órdenes")
+    
+    with st.expander("📝 Registrar Nueva Orden Futura"):
+        with st.form("form_agenda"):
+            a_cli = st.text_input("Cliente:")
+            a_prod = st.selectbox("Producto:", LISTA_NOMBRES_PRODUCTOS)
+            a_cant = st.number_input("Cantidad:", min_value=1, value=1)
+            c_fd, c_fh = st.columns(2)
+            with c_fd: a_fecha = st.date_input("Día de Entrega:", min_value=hoy_obj)
+            with c_fh: a_hora = st.time_input("Hora de Entrega:")
+            
+            c_nd, c_cp = st.columns(2)
+            with c_nd: a_notas = st.text_input("Notas Especiales:")
+            with c_cp: a_dest = st.selectbox("Preparar en:", ["Cocina", "Entrega Directa"], index=0 if TODOS_LOS_PRODUCTOS[a_prod]["cat"] == "Platillos" else 1)
+            
+            a_pago = st.radio("Cobro:", ["Pagado", "Pendiente"], horizontal=True)
+            
+            if st.form_submit_button("Agendar Pedido", type="primary"):
+                if not a_cli.strip() and a_pago == "Pendiente": st.warning("Falta nombre.")
+                else:
+                    n_f = a_cli.strip() if a_cli.strip() else "Mostrador"
+                    f_str = a_fecha.strftime("%d/%m/%Y")
+                    h_str = a_hora.strftime("%H:%M")
+                    tot_a = TODOS_LOS_PRODUCTOS[a_prod]["precio"] * a_cant
+                    
+                    for _ in range(a_cant):
+                        # Si lo agendaste para HOY, lo manda de una vez
+                        est_a = "Pendiente" if a_fecha > hoy_obj else ("Preparando" if a_dest == "Cocina" else "Entregado")
+                        sh.worksheet("Operaciones").append_row([n_f, armar_nombre(TODOS_LOS_PRODUCTOS[a_prod]["cat"], a_prod), a_dest, a_notas, "Definir Hora", h_str, est_a, tot_a if _ == 0 else 0, f_str, st.session_state.cajero])
+                    
+                    if a_pago == "Pendiente": sh.worksheet("Deudas").append_row([n_f, "Deuda", tot_a, f"{a_cant}x {a_prod}", hoy_str])
+                    leer.clear(); st.success("¡Agendado exitosamente!"); st.rerun()
+
+    st.divider()
+    hoy_list, manana_list, futuro_list = [], [], []
+    
     if len(ops) > 1:
-        futuros = 0
         for i, f in enumerate(ops[1:], start=2):
             if len(f) > 8 and f[6] not in ["Entregado", "Listo"]:
-                try: fecha_pedido = datetime.strptime(f[8], "%d/%m/%Y").date()
-                except: fecha_pedido = hoy_obj 
-
-                if fecha_pedido > hoy_obj:
-                    futuros += 1
-                    st.info(f"**{f[1]}** - Fecha: {f[8]} | Hora: {f[5]} | Cliente: {f[0]}")
-                    
+                try: fp = datetime.strptime(f[8], "%d/%m/%Y").date()
+                except: fp = hoy_obj 
+                
+                if fp == hoy_obj: hoy_list.append((i, f))
+                elif fp == hoy_obj + timedelta(days=1): manana_list.append((i, f))
+                elif fp > hoy_obj + timedelta(days=1): futuro_list.append((i, f))
+                
+        def mostrar_agendados(lista, titulo):
+            if lista:
+                st.markdown(f"### {titulo}")
+                for i, f in lista:
+                    st.info(f"**{f[1]}** | Fecha: {f[8]} | Hora: {f[5]} | Cliente: {f[0]}")
                     if st.session_state.admin_mode:
-                        with st.expander("Modificar Orden (Admin)"):
+                        with st.expander(f"Modificar {f[1]} (Admin)"):
                             n_cli = st.text_input("Cliente", value=f[0], key=f"ac_{i}")
                             n_fec = st.text_input("Fecha (DD/MM/YYYY)", value=f[8], key=f"af_{i}")
-                            n_not = st.text_input("Notas", value=f[3], key=f"an_{i}")
-                            c_g, c_b = st.columns(2)
-                            with c_g:
-                                if st.button("Guardar Cambios", key=f"ag_{i}"):
-                                    sh.worksheet("Operaciones").update_cell(i, 1, n_cli)
-                                    sh.worksheet("Operaciones").update_cell(i, 9, n_fec)
-                                    sh.worksheet("Operaciones").update_cell(i, 4, n_not)
-                                    leer.clear()
-                                    st.rerun()
-                            with c_b:
-                                if st.button("Eliminar Registro", key=f"ab_{i}"):
-                                    sh.worksheet("Operaciones").delete_rows(i)
-                                    leer.clear()
-                                    st.rerun()
-                    
-                    c_p1, c_p2 = st.columns(2)
-                    with c_p1:
-                        if st.button("Pasar a cocina HOY", key=f"ae_coc_{i}"):
-                            sh.worksheet("Operaciones").update_cell(i, 7, "Preparando")
-                            sh.worksheet("Operaciones").update_cell(i, 9, hoy_str)
-                            leer.clear()
-                            st.rerun()
-                    with c_p2:
-                        if st.button("Entregado", key=f"ae_ent_{i}"):
-                            sh.worksheet("Operaciones").update_cell(i, 7, "Entregado")
-                            leer.clear()
-                            st.rerun()
-                            
-        if futuros == 0: st.success("Sin órdenes programadas a futuro.")
+                            if st.button("Guardar Cambios", key=f"ag_{i}"):
+                                sh.worksheet("Operaciones").update_cell(i, 1, n_cli); sh.worksheet("Operaciones").update_cell(i, 9, n_fec); leer.clear(); st.rerun()
+                            if st.button("Eliminar Registro", key=f"ab_{i}"):
+                                sh.worksheet("Operaciones").delete_rows(i); leer.clear(); st.rerun()
+
+        mostrar_agendados(hoy_list, "🔥 Para Hoy (Pendientes de pasar a cocina)")
+        mostrar_agendados(manana_list, "⏳ Para Mañana")
+        mostrar_agendados(futuro_list, "📅 Futuros")
 
 # ==========================================
-# PESTAÑA 6: PAGOS (Control de Crédito)
+# PESTAÑA 6: PAGOS CON HISTORIAL LIMPIO
 # ==========================================
 with tabs[5]:
-    st.header("💳 Control de Crédito y Deudas")
+    st.header("💳 Control de Crédito")
     if len(deu) > 1:
         lista_nombres = sorted(list(set(f[0] for f in deu[1:] if len(f) > 0 and f[0] != "")))
         busqueda = st.selectbox("Buscar Cliente:", ["Todos los saldos"] + lista_nombres)
         
-        clientes_resumen = {}
+        c_res = {}
         for i, f in enumerate(deu[1:], start=2):
             if len(f) >= 3:
                 c, tipo = f[0], f[1]
                 try: m = float(f[2])
                 except: m = 0.0
-                if c not in clientes_resumen: clientes_resumen[c] = {"tot": 0, "hist": []}
-                if tipo == "Deuda": clientes_resumen[c]["tot"] += m
-                else: clientes_resumen[c]["tot"] -= m
-                clientes_resumen[c]["hist"].append({"idx": i, "data": f})
+                if c not in c_res: c_res[c] = {"tot": 0, "hist": []}
+                if tipo == "Deuda": c_res[c]["tot"] += m
+                else: c_res[c]["tot"] -= m
+                c_res[c]["hist"].append({"idx": i, "data": f})
             
-        for c, info in clientes_resumen.items():
+        for c, info in c_res.items():
             if (busqueda == "Todos los saldos" or c == busqueda) and round(info["tot"], 2) > 0:
-                with st.expander(f"🔴 {c} - Saldo Pendiente: ${round(info['tot'], 2)}", expanded=(busqueda!="Todos los saldos")):
-                    for h in info["hist"]:
-                        fila = h["data"]
-                        det = fila[3] if len(fila)>3 else ""
-                        fec_original = fila[4] if len(fila)>4 else ""
-                        try: fec_corta = datetime.strptime(fec_original, "%d/%m/%Y").strftime("%d/%m")
-                        except: fec_corta = fec_original
+                with st.expander(f"{c} - Saldo Pendiente: ${round(info['tot'], 2)}", expanded=(busqueda!="Todos los saldos")):
+                    
+                    # Filtrar para mostrar solo desde el último pago
+                    last_abono_idx = 0
+                    for idx_h, h in enumerate(info["hist"]):
+                        if h["data"][1] == "Abono": last_abono_idx = idx_h
+                    hist_mostrar = info["hist"][last_abono_idx:]
+                    
+                    for h in hist_mostrar:
+                        fila, det = h["data"], h["data"][3] if len(h["data"])>3 else ""
+                        try: fec_corta = datetime.strptime(fila[4], "%d/%m/%Y").strftime("%d/%m") if len(fila)>4 else ""
+                        except: fec_corta = ""
                         st.write(f"{'[-] Cargo' if fila[1]=='Deuda' else '[+] Abono'} **${fila[2]}** ({fec_corta}) - *{det}*")
                     
                     st.divider()
                     c_ab, c_btn = st.columns(2)
-                    with c_ab: 
-                        abono = st.number_input(f"Monto a abonar:", min_value=0.0, max_value=float(info['tot']), value=float(info['tot']), key=f"n_{c}")
+                    with c_ab: abono = st.number_input(f"Abonar:", min_value=0.0, max_value=float(info['tot']), value=float(info['tot']), key=f"n_{c}")
                     with c_btn:
-                        st.write("")
                         if st.button("Registrar Pago", key=f"p_{c}", type="primary", use_container_width=True):
-                            sh.worksheet("Deudas").append_row([c, "Abono", abono, "Pago", hoy_str])
-                            leer.clear()
-                            st.rerun()
+                            sh.worksheet("Deudas").append_row([c, "Abono", abono, "Pago", hoy_str]); leer.clear(); st.rerun()
 
 # ==========================================
-# PESTAÑA 7: INVENTARIO Y GESTOR DE PRECIOS
+# PESTAÑA 7: INVENTARIO Y PRECIOS
 # ==========================================
 with tabs[6]:
-    st.header("📦 Gestión de Inventario y Precios")
-    
-    with st.expander("💲 MODIFICAR PRECIOS DEL MENÚ (Guarda automático en la Nube)", expanded=True):
-        st.write("Cambia el precio de cualquier producto y se actualizará en todos los botones:")
+    st.header("📦 Inventario y Precios")
+    with st.expander("💲 MODIFICAR PRECIOS DEL MENÚ (En la Nube)", expanded=True):
         cp_sel, cp_val = st.columns([2, 1])
-        with cp_sel:
-            prod_a_editar = st.selectbox("Seleccionar Producto:", LISTA_NOMBRES_PRODUCTOS, key="edit_p_sel")
-        with cp_val:
-            precio_actual = TODOS_LOS_PRODUCTOS[prod_a_editar]["precio"]
-            nuevo_precio = st.number_input("Precio ($):", value=float(precio_actual), step=1.0, min_value=0.0, key="edit_p_val")
+        with cp_sel: prod_ed = st.selectbox("Producto:", LISTA_NOMBRES_PRODUCTOS, key="edit_p_sel")
+        with cp_val: n_pre = st.number_input("Precio ($):", value=float(TODOS_LOS_PRODUCTOS[prod_ed]["precio"]), step=1.0, key="edit_p_val")
 
-        if st.button("💾 Guardar Nuevo Precio", type="primary", use_container_width=True):
+        if st.button("💾 Guardar Precio", type="primary", use_container_width=True):
             try:
-                ws_inv = sh.worksheet("Inventario")
-                if prod_a_editar in fila_producto_map:
-                    fila_target = fila_producto_map[prod_a_editar]
-                    ws_inv.update_cell(fila_target, 4, nuevo_precio)
-                else:
-                    cat_prod = TODOS_LOS_PRODUCTOS[prod_a_editar]["cat"]
-                    ws_inv.append_row([prod_a_editar, "", cat_prod, nuevo_precio, "Activo"])
-                leer.clear()
-                st.success(f"¡Precio de {prod_a_editar} actualizado a ${nuevo_precio}!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al guardar precio: {e}")
+                if prod_ed in fila_producto_map: sh.worksheet("Inventario").update_cell(fila_producto_map[prod_ed], 4, n_pre)
+                else: sh.worksheet("Inventario").append_row([prod_ed, "", TODOS_LOS_PRODUCTOS[prod_ed]["cat"], n_pre, "Activo"])
+                leer.clear(); st.success(f"¡Actualizado a ${n_pre}!"); st.rerun()
+            except: st.error("Error al guardar.")
 
     st.divider()
-
     with st.expander("Alta de Nuevo Producto"):
         with st.form("add_inv"):
-            n_prod = st.text_input("Nombre comercial:")
-            n_cat = st.selectbox("Clasificación de menú:", list(MENU_BASE.keys()))
-            n_pre = st.number_input("Precio Unitario ($):", step=5.0)
-            
-            if "Tortas" in n_cat:
-                st.info("Para este producto, defina el inventario inicial:")
-                n_stk = st.number_input("Cantidad Física:", min_value=0, value=10)
-            else:
-                n_stk = "" 
-                
-            if st.form_submit_button("Guardar en Base de Datos"):
-                if n_prod.strip():
-                    sh.worksheet("Inventario").append_row([n_prod, n_stk, n_cat, n_pre, "Activo"])
-                    leer.clear()
-                    st.success(f"Registro exitoso de {n_prod}.")
-                    st.rerun()
-                else:
-                    st.warning("Especifique un nombre.")
+            n_p = st.text_input("Nombre:")
+            n_c = st.selectbox("Categoría:", list(MENU_BASE.keys()))
+            n_pr = st.number_input("Precio ($):", step=5.0)
+            n_s = st.number_input("Stock Inicial:", min_value=0, value=10) if "Tortas" in n_c else ""
+            if st.form_submit_button("Guardar"):
+                if n_p.strip(): sh.worksheet("Inventario").append_row([n_p, n_s, n_c, n_pr, "Activo"]); leer.clear(); st.rerun()
+                else: st.warning("Falta nombre.")
 
     st.divider()
-    st.write("Conteo físico y existencias (Productos controlados):")
-    
     if len(inv) > 1:
         with st.form("inv_form"):
-            cols = st.columns(4)
-            nv = {}
-            contador = 0
+            st.write("Conteo físico (Productos controlados):")
+            cols, nv, ctd = st.columns(4), {}, 0
             for i, f in enumerate(inv[1:], start=2):
-                if len(f) >= 5 and str(f[4]).strip().lower() == "activo" and "Tortas" in f[2]:
+                if len(f) >= 5 and (f[4].strip().lower() if len(f)>4 else "activo") == "activo" and "Tortas" in f[2]:
                     try: val = int(f[1])
                     except: val = 0
-                    
-                    with cols[contador % 4]:
-                        nv[i] = st.number_input(f[0], value=val, min_value=0, key=f"ui_inv_{i}")
-                    contador += 1
-                    
-            if contador == 0:
-                st.info("No hay productos con conteo físico activo.")
-                
+                    with cols[ctd % 4]: nv[i] = st.number_input(f[0], value=val, min_value=0, key=f"ui_inv_{i}")
+                    ctd += 1
+            if ctd == 0: st.info("No hay productos con límite.")
             if st.form_submit_button("Actualizar Conteos"):
-                for i, v in nv.items(): 
-                    sh.worksheet("Inventario").update_cell(i, 2, v)
-                leer.clear()
-                st.success("Existencias guardadas en servidor.")
-                st.rerun()
+                for i, v in nv.items(): sh.worksheet("Inventario").update_cell(i, 2, v)
+                leer.clear(); st.rerun()
 
 # ==========================================
 # PESTAÑA 8: MODO ADMIN
 # ==========================================
 if st.session_state.admin_mode:
     with tabs[7]:
-        st.header("⚙️ Panel Administrativo")
-        
-        st.subheader("Ingresos Recientes (Últimos 6 cortes)")
-        cortes = []
-        if len(hist) > 1:
-            for row in hist:
-                if len(row) > 2 and ("Corte" in row[1] or "Cierre" in row[1]):
-                    try: 
-                        monto_str = row[2].split("$")[1].replace(",", "").strip()
-                        cortes.append({"Fecha": row[0], "Ingreso": float(monto_str)})
-                    except: pass
-                    
-        if cortes:
-            df_cortes = pd.DataFrame(cortes[-6:])
-            st.bar_chart(df_cortes.set_index("Fecha"))
-        else:
-            st.info("Aún no hay cortes registrados.")
+        st.header("⚙️ Admin")
+        cortes = [{"Fecha": r[0], "Ingreso": float(r[2].split("$")[1].replace(",", "").strip())} for r in hist if len(r)>2 and ("Corte" in r[1] or "Cierre" in r[1])] if len(hist)>1 else []
+        if cortes: st.bar_chart(pd.DataFrame(cortes[-6:]).set_index("Fecha"))
+        else: st.info("No hay cortes.")
             
         st.divider()
-        st.subheader("Cierre de Turno de Hoy")
         if st.button("EJECUTAR CORTE DE CAJA HOY", type="primary"):
             try:
-                ws_ops = sh.worksheet("Operaciones")
-                ws_hist = sh.worksheet("Historial")
-                
-                filas_mantener = [ops[0]] 
-                ventas_hoy = 0
-                tickets_borrados = 0
-                
+                f_man, v_hoy, tkts = [ops[0]], 0, 0
                 for f in ops[1:]:
                     if len(f) > 8 and f[8] == hoy_str and f[6] == "Entregado":
-                        try: ventas_hoy += float(f[7]) if f[7] else 0.0
+                        try: v_hoy += float(f[7])
                         except: pass
-                        tickets_borrados += 1
-                    else: filas_mantener.append(f)
-                
-                if tickets_borrados > 0:
-                    ws_hist.append_row([hoy_str, "Cierre Diario", f"Ingreso Total: ${ventas_hoy}", f"Transacciones: {tickets_borrados}"])
-                    ws_ops.clear()
-                    ws_ops.update("A1", filas_mantener)
-                    leer.clear()
-                    st.success(f"Corte exitoso procesado por: ${ventas_hoy}.")
-                    st.rerun()
-                else: st.info("No existen operaciones de hoy aptas para cierre.")
+                        tkts += 1
+                    else: f_man.append(f)
+                if tkts > 0:
+                    sh.worksheet("Historial").append_row([hoy_str, "Cierre Diario", f"Ingreso Total: ${v_hoy}", f"Transacciones: {tkts}"])
+                    sh.worksheet("Operaciones").clear(); sh.worksheet("Operaciones").update("A1", f_man)
+                    leer.clear(); st.success(f"Corte procesado: ${v_hoy}"); st.rerun()
+                else: st.info("Sin operaciones para cierre.")
             except Exception as e: st.error(f"Falla: {e}")
                 
         st.divider()
-        st.subheader("Editor Base de Datos (Avanzado)")
         if len(ops) > 0:
-            df_ops = pd.DataFrame(ops[1:], columns=ops[0])
-            edited_df = st.data_editor(df_ops, num_rows="dynamic", use_container_width=True)
-            if st.button("Forzar Sincronización de Tabla"):
-                datos_nuevos_ops = [edited_df.fillna("").columns.values.tolist()] + edited_df.fillna("").values.tolist()
-                ws_o = sh.worksheet("Operaciones")
-                ws_o.clear()
-                ws_o.update("A1", datos_nuevos_ops)
-                leer.clear()
-                st.success("Sincronización completada.")
-                st.rerun()
+            edited_df = st.data_editor(pd.DataFrame(ops[1:], columns=ops[0]), num_rows="dynamic", use_container_width=True)
+            if st.button("Forzar Sincronización DB"):
+                sh.worksheet("Operaciones").clear(); sh.worksheet("Operaciones").update("A1", [edited_df.fillna("").columns.values.tolist()] + edited_df.fillna("").values.tolist())
+                leer.clear(); st.rerun()
 
 # ==========================================
-# PESTAÑA 9: GASTOS (SOLO ADMIN)
+# PESTAÑA 9: GASTOS
 # ==========================================
 if st.session_state.admin_mode:
     with tabs[8]:
-        st.header("💸 Control de Compras e Insumos")
-        
+        st.header("💸 Gastos")
         with st.form("form_gastos"):
-            g_conc = st.text_input("Concepto (Ej. Vasos, Leche, Café):")
-            c_cant, c_uni, c_precio = st.columns(3)
-            with c_cant: g_cant = st.number_input("Cantidad:", min_value=0.0, step=0.5, value=1.0)
-            with c_uni: g_uni = st.selectbox("Unidad:", ["Pieza(s)", "Kg", "Litro(s)", "Paquete(s)"])
-            with c_precio: g_precio = st.number_input("Precio Unitario ($):", min_value=0.0, step=10.0, value=0.0)
-            
-            total_gasto = g_cant * g_precio
-            st.info(f"**Total del gasto:** ${total_gasto}")
-            
+            g_conc = st.text_input("Concepto:")
+            cc, cu, cp = st.columns(3)
+            with cc: g_cant = st.number_input("Cantidad:", min_value=0.0, step=0.5, value=1.0)
+            with cu: g_uni = st.selectbox("Unidad:", ["Pieza(s)", "Kg", "Litro(s)", "Paquete(s)"])
+            with cp: g_precio = st.number_input("Precio Uni ($):", min_value=0.0, step=10.0, value=0.0)
+            tot_g = g_cant * g_precio
             if st.form_submit_button("Registrar Gasto"):
-                if g_conc.strip() and total_gasto > 0:
-                    try:
-                        sh.worksheet("Gastos").append_row([hoy_str, g_conc, g_cant, g_uni, g_precio, total_gasto, semana_str])
-                        leer.clear()
-                        st.success(f"Gasto de ${total_gasto} registrado.")
-                        st.rerun()
-                    except: st.error("Asegúrate de tener la pestaña 'Gastos' en Google Sheets.")
-                else: st.warning("Escribe el concepto y el precio.")
+                if g_conc.strip() and tot_g > 0:
+                    try: sh.worksheet("Gastos").append_row([hoy_str, g_conc, g_cant, g_uni, g_precio, tot_g, semana_str]); leer.clear(); st.rerun()
+                    except: st.error("Falta pestaña 'Gastos'.")
+                else: st.warning("Datos inválidos.")
                     
-        st.divider()
-        st.subheader("Historial de Gastos por Semana")
-        gas_validos = [fila[:7] for fila in gas if len(fila) >= 7 and fila[0] != "Fecha"]
-        
-        if len(gas_validos) > 0:
-            df_gas = pd.DataFrame(gas_validos, columns=["Fecha", "Concepto", "Cantidad", "Unidad", "Precio_Unitario", "Total", "Semana"])
-            df_gas['Total'] = pd.to_numeric(df_gas['Total'], errors='coerce').fillna(0)
-            
-            for sem in reversed(df_gas['Semana'].unique()): 
-                df_semana = df_gas[df_gas['Semana'] == sem]
-                total_semana = df_semana['Total'].sum()
-                with st.expander(f"Semana: {sem} --- Total: ${total_semana}"):
-                    for _, row in df_semana.iterrows():
-                        st.write(f"- {row['Fecha']}: **{row['Concepto']}** ({row['Cantidad']} {row['Unidad']}) ➔ **${row['Total']}**")
-        else:
-            st.info("No hay registros de gastos aún.")
+        g_val = [f[:7] for f in gas if len(f)>=7 and f[0]!="Fecha"]
+        if g_val:
+            df_g = pd.DataFrame(g_val, columns=["Fecha", "Concepto", "Cantidad", "Unidad", "Precio_Unitario", "Total", "Semana"])
+            df_g['Total'] = pd.to_numeric(df_g['Total'], errors='coerce').fillna(0)
+            for sem in reversed(df_g['Semana'].unique()): 
+                df_s = df_g[df_g['Semana'] == sem]
+                with st.expander(f"Semana: {sem} --- Total: ${df_s['Total'].sum()}"):
+                    for _, r in df_s.iterrows(): st.write(f"- {r['Fecha']}: **{r['Concepto']}** ({r['Cantidad']} {r['Unidad']}) ➔ **${r['Total']}**")
