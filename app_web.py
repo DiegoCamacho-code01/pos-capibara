@@ -12,36 +12,60 @@ st.set_page_config(page_title="POS Sistema - Faro Café", layout="wide", initial
 
 st.markdown("""
 <style>
-    /* Botones más grandes, táctiles y fáciles de presionar en movimiento */
-    div.stButton > button { 
-        min-height: 95px; 
-        border-radius: 12px; 
-        border: 2px solid #005A9E; 
-        font-weight: 700; 
-        background-color: #FFFFFF; 
-        color: #002244; 
-        font-size: 18px; 
-        box-shadow: 0 3px 6px rgba(0,0,0,0.08);
-        padding: 8px 12px;
-        white-space: pre-wrap;
-        line-height: 1.25;
+    /* Escalado global de textos para exteriores y movilidad */
+    html, body, [class*="css"], .stMarkdown, p, span, label, div {
+        font-size: 18px !important;
     }
-    div.stButton > button:hover { 
-        border-color: #003B66; 
-        background-color: #F0F7FF; 
-        transform: translateY(-2px);
+    h1 { font-size: 32px !important; font-weight: 800 !important; }
+    h2 { font-size: 26px !important; font-weight: 700 !important; }
+    h3 { font-size: 22px !important; font-weight: 700 !important; }
+    h4 { font-size: 20px !important; font-weight: 600 !important; }
+
+    /* Estilo de botones de producto (Gigantes para cobrar con 1 dedo) */
+    .prod-container div.stButton > button { 
+        min-height: 105px !important; 
+        border-radius: 14px !important; 
+        border: 2px solid #005A9E !important; 
+        font-weight: 700 !important; 
+        background-color: #FFFFFF !important; 
+        color: #002244 !important; 
+        font-size: 20px !important; 
+        box-shadow: 0 4px 8px rgba(0,0,0,0.08) !important;
+        padding: 10px 14px !important;
+        white-space: pre-wrap !important;
+        line-height: 1.25 !important;
     }
-    div.stButton > button:active { 
-        background-color: #CCE5FF; 
-        transform: scale(0.97); 
+    .prod-container div.stButton > button:hover { 
+        border-color: #003B66 !important; 
+        background-color: #F0F7FF !important; 
+        transform: translateY(-2px) !important;
     }
+    .prod-container div.stButton > button:active { 
+        background-color: #CCE5FF !important; 
+        transform: scale(0.97) !important; 
+    }
+
+    /* Estilo de botones de Categoría (Barra de cambio en 1 toque) */
+    .cat-container div.stButton > button {
+        min-height: 60px !important;
+        border-radius: 10px !important;
+        font-size: 19px !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05) !important;
+        padding: 6px 10px !important;
+    }
+
+    /* Botón de acción primaria general */
     div.stButton > button[kind="primary"] { 
-        background-color: #005A9E; 
-        color: white; 
-        border: 2px solid #003B66; 
-        font-size: 20px;
-        min-height: 85px;
+        background-color: #005A9E !important; 
+        color: white !important; 
+        border: 2px solid #003B66 !important; 
+        font-size: 20px !important;
+        min-height: 80px !important;
+        font-weight: 700 !important;
     }
+
+    /* Alertas de inventario y agotados */
     .btn-alerta > button { 
         background-color: #FFF3CD !important; 
         color: #856404 !important; 
@@ -51,24 +75,28 @@ st.markdown("""
         background-color: #E9ECEF !important; 
         color: #6C757D !important; 
         border: 1px solid #DEE2E6 !important; 
-        opacity: 1; 
+        opacity: 1 !important; 
     }
+
+    /* Cabecera fija para categorías */
     .sticky-header { 
         position: sticky; 
         top: 0; 
         background-color: white; 
         z-index: 999; 
-        padding: 10px 0; 
-        border-bottom: 1px solid #E1E4E8; 
+        padding: 8px 0 14px 0; 
+        border-bottom: 2px solid #E1E4E8; 
         margin-bottom: 15px;
     }
+
+    /* Tarjetas de cocina y comandas */
     .card { 
         background-color: #FFFFFF; 
-        padding: 16px; 
-        border-radius: 10px; 
-        border-left: 6px solid #005A9E; 
+        padding: 18px; 
+        border-radius: 12px; 
+        border-left: 7px solid #005A9E; 
         margin-bottom: 15px; 
-        box-shadow: 0 2px 6px rgba(0,0,0,0.06); 
+        box-shadow: 0 3px 6px rgba(0,0,0,0.06); 
         border-right: 1px solid #E1E4E8; 
         border-top: 1px solid #E1E4E8; 
         border-bottom: 1px solid #E1E4E8;
@@ -76,12 +104,12 @@ st.markdown("""
     .card-borrador {
         background-color: #F8FBFF;
         border: 2px dashed #005A9E;
-        padding: 18px;
-        border-radius: 12px;
+        padding: 20px;
+        border-radius: 14px;
         margin-bottom: 20px;
     }
     .card-urgente { 
-        border-left: 6px solid #D93025; 
+        border-left: 7px solid #D93025; 
         background-color: #FEF7F7; 
     }
 </style>
@@ -167,7 +195,7 @@ MENU = {k: v.copy() for k, v in MENU_BASE.items()}
 dict_inv = {}
 fila_producto_map = {}
 
-# Lectura dinámica de Inventario (Google Sheets manda sobre precios)
+# Lectura dinámica de Inventario desde Google Sheets
 if len(inv) > 1:
     for row_idx, row in enumerate(inv[1:], start=2):
         if len(row) >= 4:
@@ -203,12 +231,17 @@ if len(deu) > 1:
     clientes_historicos.extend([f[0] for f in deu[1:] if len(f)>0 and f[0].strip() not in ["", "Mostrador"]])
 clientes_unicos = sorted(list(set(clientes_historicos)))
 
-# Catálogo plano para búsquedas y reemplazos
 TODOS_LOS_PRODUCTOS = {}
 for cat_k, p_dict in MENU.items():
     for p_k, p_v in p_dict.items():
         TODOS_LOS_PRODUCTOS[p_k] = {"precio": p_v, "cat": cat_k}
 LISTA_NOMBRES_PRODUCTOS = sorted(list(TODOS_LOS_PRODUCTOS.keys()))
+
+# Estado de categoría activa en Carrito
+if 'cat_activa' not in st.session_state:
+    st.session_state.cat_activa = "Café"
+if st.session_state.cat_activa not in MENU and len(MENU) > 0:
+    st.session_state.cat_activa = list(MENU.keys())[0]
 
 # ==========================================
 # 5. MOTOR DE RECONOCIMIENTO Y VOZ (NLP)
@@ -250,7 +283,6 @@ def procesar_voz_pedido(texto_in):
     items_extraidos = []
     num_map = {"un": 1, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7, "ocho": 8}
     
-    # Notas automáticas
     notas_auto = []
     if "sin azucar" in t or "sin azúcar" in t: notas_auto.append("Sin azúcar")
     if "deslactosada" in t: notas_auto.append("Leche deslactosada")
@@ -318,23 +350,23 @@ if st.session_state.admin_mode:
 tabs = st.tabs(pestanas)
 
 # ==========================================
-# PESTAÑA 1: CARRITO (Principal con Voz y Borrador)
+# PESTAÑA 1: CARRITO (Con Botones de Categorías)
 # ==========================================
 with tabs[0]:
     # --- MÓDULO DE ENTRADA POR VOZ / DICTADO ---
     with st.expander("🎙️ TOMAR ORDEN POR VOZ / DICTADO RÁPIDO", expanded=False):
-        st.write("Dicta usando el micrófono del teclado de tu teléfono o escribe la orden completa.")
-        st.caption("Ejemplo: *'2 cafés vainilla sin azúcar y una ensalada para las 5 para Diego pendiente'*")
+        st.write("Presiona el micrófono del teclado de tu celular y dicta la orden:")
+        st.caption("Ejemplo: *'2 cafés vainilla sin azúcar y una ensalada para Diego a las 5 pendiente'*")
         col_v1, col_v2 = st.columns([3, 1])
         with col_v1:
-            texto_voz = st.text_input("Voz / Dictado:", placeholder="Presiona el micrófono del teclado y habla...", label_visibility="collapsed", key="in_voz")
+            texto_voz = st.text_input("Dictado:", placeholder="Habla o escribe aquí la orden...", label_visibility="collapsed", key="in_voz")
         with col_v2:
             if st.button("⚡ Interpretar", use_container_width=True):
                 if texto_voz.strip():
                     st.session_state.borrador_voz = procesar_voz_pedido(texto_voz)
                     st.rerun()
 
-    # --- TARJETA DE REVISIÓN / EDICIÓN DEL BORRADOR POR VOZ ---
+    # --- BORRADOR EDITABLE DE ORDEN POR VOZ ---
     if st.session_state.borrador_voz:
         b = st.session_state.borrador_voz
         st.markdown('<div class="card-borrador">', unsafe_allow_html=True)
@@ -364,7 +396,7 @@ with tabs[0]:
             b["dia_tipo"] = st.radio("Día:", ["Hoy", "Mañana"], index=d_idx, horizontal=True, key="bv_dia")
 
         st.write("---")
-        st.write("**Productos detectados (Puedes cambiar o corregir cualquiera):**")
+        st.write("**Productos detectados (Puedes cambiar o corregir cualquiera con 1 toque):**")
         
         tot_borrador = 0
         eliminar_idx = None
@@ -372,7 +404,6 @@ with tabs[0]:
         for idx, item in enumerate(b["items"]):
             cb1, cb2, cb3, cb4, cb5 = st.columns([2.5, 1, 1.5, 1.5, 0.8])
             with cb1:
-                # Selector para corregir producto si entendió mal
                 prod_idx = LISTA_NOMBRES_PRODUCTOS.index(item["prod"]) if item["prod"] in LISTA_NOMBRES_PRODUCTOS else 0
                 nuevo_prod = st.selectbox("Producto:", LISTA_NOMBRES_PRODUCTOS, index=prod_idx, key=f"bp_{idx}")
                 item["prod"] = nuevo_prod
@@ -397,7 +428,6 @@ with tabs[0]:
             b["items"].pop(eliminar_idx)
             st.rerun()
 
-        # Botón para agregar un producto más al borrador si faltó
         if st.button("+ Añadir otro producto a esta orden", key="btn_add_b"):
             b["items"].append({"prod": LISTA_NOMBRES_PRODUCTOS[0], "cant": 1, "precio": TODOS_LOS_PRODUCTOS[LISTA_NOMBRES_PRODUCTOS[0]]["precio"], "notas": "", "dest": "Entrega Directa", "cat": TODOS_LOS_PRODUCTOS[LISTA_NOMBRES_PRODUCTOS[0]]["cat"]})
             st.rerun()
@@ -432,28 +462,32 @@ with tabs[0]:
 
                     st.session_state.borrador_voz = None
                     leer.clear()
-                    st.success("¡Orden procesada y enviada exitosamente!")
+                    st.success("¡Orden procesada exitosamente!")
                     st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # --- BARRA DE ACCESOS RÁPIDOS (FAVORITOS) ---
-    st.write("**Accesos Rápidos (1 Toque):**")
-    fav_cols = st.columns(4)
-    favoritos = ["Café Clásico", "Cafe Vainilla", "Cafe Avellana", "Pan de Dulce"]
-    for idx_f, fav in enumerate(favoritos):
-        if fav in TODOS_LOS_PRODUCTOS:
-            p_fav = TODOS_LOS_PRODUCTOS[fav]["precio"]
-            with fav_cols[idx_f]:
-                if st.button(f"⚡ {fav}\n${p_fav}", key=f"fav_{fav}", use_container_width=True):
-                    st.session_state.cart.append({"prod": fav, "precio": p_fav, "notas": "", "pan": False, "cat": TODOS_LOS_PRODUCTOS[fav]["cat"]})
+    # --- BARRA DE BOTONES DE CATEGORÍAS (1 SOLO TOQUE) ---
+    st.markdown('<div class="sticky-header"><div class="cat-container">', unsafe_allow_html=True)
+    st.write("**Selecciona Categoría:**")
+    lista_cats = list(MENU.keys())
+    
+    # Renderizado en filas de 3 columnas para botones anchos y cómodos
+    cols_por_fila = 3
+    for fila_i in range(0, len(lista_cats), cols_por_fila):
+        bloque = lista_cats[fila_i:fila_i + cols_por_fila]
+        col_c = st.columns(cols_por_fila)
+        for idx_col, cat_n in enumerate(bloque):
+            with col_c[idx_col]:
+                es_activa = (st.session_state.cat_activa == cat_n)
+                tipo_btn = "primary" if es_activa else "secondary"
+                if st.button(cat_n, key=f"btn_cat_{cat_n}", use_container_width=True, type=tipo_btn):
+                    st.session_state.cat_activa = cat_n
                     st.rerun()
+    st.markdown('</div></div>', unsafe_allow_html=True)
 
-    st.divider()
-
-    # --- CATÁLOGO COMPLETO POR CATEGORÍAS ---
-    st.markdown('<div class="sticky-header">', unsafe_allow_html=True)
-    cat_seleccionada = st.selectbox("Categorías del Menú:", list(MENU.keys()))
-    st.markdown('</div>', unsafe_allow_html=True)
+    # --- GRILLA DE PRODUCTOS DE LA CATEGORÍA ACTIVA ---
+    cat_seleccionada = st.session_state.cat_activa
+    st.markdown('<div class="prod-container">', unsafe_allow_html=True)
     
     cols = st.columns(2)
     for i, (n, p) in enumerate(MENU[cat_seleccionada].items()):
@@ -477,6 +511,8 @@ with tabs[0]:
                 st.rerun()
             if alerta: st.markdown('</div>', unsafe_allow_html=True)
             
+    st.markdown('</div>', unsafe_allow_html=True)
+
     with st.expander("Añadir Cargo Extra Manual"):
         c_mot, c_mon = st.columns([3,1])
         with c_mot: mot = st.text_input("Concepto:")
@@ -486,7 +522,7 @@ with tabs[0]:
                 st.session_state.cart.append({"prod": f"Extra: {mot}", "precio": mon, "notas": "", "pan": False, "cat": "Extra"})
                 st.rerun()
     
-    # --- RESUMEN DEL CARRITO TRADICIONAL ---
+    # --- RESUMEN DE ORDEN MANUAL ---
     if st.session_state.cart:
         st.divider()
         st.subheader("Resumen de Orden")
@@ -502,7 +538,7 @@ with tabs[0]:
             with c4:
                 if item.get('cat') == "Platillos":
                     item['dest'] = "Cocina"
-                    st.markdown("<div style='padding-top:10px; color:#005A9E; font-weight:600;'>👨‍🍳 A cocina</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='padding-top:10px; color:#005A9E; font-weight:700;'>👨‍🍳 A cocina</div>", unsafe_allow_html=True)
                 else:
                     a_cocina = st.checkbox("A cocina", key=f"dest_{idx}")
                     item['dest'] = "Cocina" if a_cocina else "Entrega Directa"
@@ -512,7 +548,7 @@ with tabs[0]:
         st.write(f"### Total a Cobrar: ${total}")
         st.divider()
         
-        st.write("**Datos del Cliente y Orden**")
+        st.write("**Datos del Cliente y Cobro:**")
         c_cli, c_pago = st.columns([2, 1])
         with c_cli:
             opcion_cliente = st.selectbox("Buscar cliente registrado:", [""] + clientes_unicos)
@@ -584,15 +620,32 @@ with tabs[1]:
     st.header("Caja Rápida (Bebidas)")
     categorias_puesto = [c for c in MENU.keys() if any(x in c for x in ["Café", "Frappés", "Bebidas", "Esquimos", "Chamoyadas"])]
     
+    if 'cat_puesto_activa' not in st.session_state:
+        st.session_state.cat_puesto_activa = categorias_puesto[0] if categorias_puesto else "Café"
+    if st.session_state.cat_puesto_activa not in categorias_puesto and categorias_puesto:
+        st.session_state.cat_puesto_activa = categorias_puesto[0]
+
     if categorias_puesto:
-        cat_p = st.selectbox("Categorías Rápidas:", categorias_puesto)
+        st.markdown('<div class="cat-container">', unsafe_allow_html=True)
+        cols_p_cat = st.columns(len(categorias_puesto))
+        for idx_cp, cat_p_nom in enumerate(categorias_puesto):
+            with cols_p_cat[idx_cp]:
+                es_activa_p = (st.session_state.cat_puesto_activa == cat_p_nom)
+                tipo_btn_p = "primary" if es_activa_p else "secondary"
+                if st.button(cat_p_nom, key=f"btn_cp_{cat_p_nom}", use_container_width=True, type=tipo_btn_p):
+                    st.session_state.cat_puesto_activa = cat_p_nom
+                    st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
         
+        st.markdown('<div class="prod-container">', unsafe_allow_html=True)
+        cat_p = st.session_state.cat_puesto_activa
         cols_p = st.columns(2)
         for i, (n, p) in enumerate(MENU[cat_p].items()):
             with cols_p[i%2]:
                 if st.button(f"{n}\n${p}", use_container_width=True, key=f"p_{n}"):
                     st.session_state.puesto_cart.append({"prod": n, "precio": p, "notas": ""})
                     st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
                     
         if st.session_state.puesto_cart:
             st.divider()
@@ -653,7 +706,7 @@ with tabs[2]:
         if pedidos_cocina:
             for i, f in pedidos_cocina:
                 urgente = "card-urgente" if f[4] == "Inmediato" else ""
-                st.markdown(f'<div class="card {urgente}"><h4>{f[1]}</h4><p><b>{f[0]}</b> | Hora: {f[5]}</p><p style="color:#D93025; font-size:14px;">Observaciones: {f[3]}</p></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="card {urgente}"><h4>{f[1]}</h4><p><b>{f[0]}</b> | Hora: {f[5]}</p><p style="color:#D93025; font-size:16px;">Observaciones: {f[3]}</p></div>', unsafe_allow_html=True)
                 
                 c_listo, c_canc = st.columns(2)
                 with c_listo:
@@ -792,7 +845,7 @@ with tabs[5]:
 with tabs[6]:
     st.header("Gestión de Inventario y Precios")
     
-    # --- ACTUALIZADOR DE PRECIOS SIN CODIFICAR ---
+    # Actualizador directo de precios en Google Sheets
     with st.expander("💲 MODIFICAR PRECIOS DEL MENÚ (Sin tocar código)", expanded=True):
         st.write("Selecciona cualquier producto para cambiar su precio. Se guardará de inmediato en Google Sheets:")
         cp_sel, cp_val = st.columns([2, 1])
@@ -809,7 +862,6 @@ with tabs[6]:
                     fila_target = fila_producto_map[prod_a_editar]
                     ws_inv.update_cell(fila_target, 4, nuevo_precio)
                 else:
-                    # Si no estaba en la hoja, lo crea
                     cat_prod = TODOS_LOS_PRODUCTOS[prod_a_editar]["cat"]
                     ws_inv.append_row([prod_a_editar, "", cat_prod, nuevo_precio, "Activo"])
                 leer.clear()
