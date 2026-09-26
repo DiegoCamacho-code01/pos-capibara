@@ -185,7 +185,7 @@ LISTA_NOMBRES_PRODUCTOS = sorted(list(TODOS_LOS_PRODUCTOS.keys()))
 if st.session_state.cat_activa not in MENU and len(MENU) > 0: st.session_state.cat_activa = list(MENU.keys())[0]
 
 # ==========================================
-# 6. SIDEBAR Y TABS
+# 5. SIDEBAR Y TABS
 # ==========================================
 with st.sidebar:
     st.write(f"**Operador:** {st.session_state.cajero}")
@@ -375,7 +375,7 @@ with tabs[1]:
         for prod_k, prec_v in p_dict.items():
             lista_rapida.append({"nombre": armar_nombre(cat_k, prod_k), "precio": prec_v, "cat": cat_k})
 
-    # 1. Asegurar estado de sesión limpio (previene StreamlitValueBelowMinError)
+    # Asegura estado limpio en session_state para evitar StreamlitValueBelowMinError
     for ctd, p_info in enumerate(lista_rapida):
         key_w = f"cr_qty_{ctd}_{p_info['nombre']}"
         if key_w not in st.session_state or st.session_state[key_w] is None:
@@ -383,7 +383,6 @@ with tabs[1]:
         elif not isinstance(st.session_state[key_w], int) or st.session_state[key_w] < 0:
             st.session_state[key_w] = 0
 
-    # 2. Renderizado de 4 columnas
     cols = st.columns(4)
     nv = {}
     for ctd, p_info in enumerate(lista_rapida):
@@ -396,7 +395,6 @@ with tabs[1]:
                 key=key_w
             )
 
-    # Cálculo y procesamiento
     pedido_rapido = []
     tot_rapido = 0
     for p_info in lista_rapida:
@@ -437,7 +435,6 @@ with tabs[1]:
                 st.error(f"Error al guardar: {err}")
 
             st.session_state.ticket_imprimir = generar_texto_ticket(nombre_cr, cr_pago, pedido_rapido, tot_rapido, tipo="venta")
-            # Reset cantidades
             for ctd, p_info in enumerate(lista_rapida):
                 st.session_state[f"cr_qty_{ctd}_{p_info['nombre']}"] = 0
             st.cache_data.clear()
@@ -520,15 +517,109 @@ with tabs[4]:
             ''', unsafe_allow_html=True)
 
 # ==========================================
-# PESTAÑA 6: PAGOS Y DEUDAS
+# PESTAÑA 6: PAGOS Y DEUDAS (SOLO DEUDORES CON ABONOS)
 # ==========================================
 with tabs[5]:
-    st.subheader("💳 Cuentas Pendientes")
+    st.subheader("💳 Cuentas por Cobrar (Deudores)")
+    
     if len(deu) > 1:
-        df_deu = pd.DataFrame(deu[1:], columns=deu[0])
-        st.dataframe(df_deu, use_container_width=True)
+        encabezados = [c.strip() for c in deu[0]]
+        df_deu_raw = pd.DataFrame(deu[1:], columns=encabezados)
+        
+        col_estado = next((c for c in df_deu_raw.columns if "estado" in c.lower() or "status" in c.lower()), df_deu_raw.columns[-1])
+        col_cliente = next((c for c in df_deu_raw.columns if "cliente" in c.lower() or "nombre" in c.lower()), df_deu_raw.columns[0])
+        col_monto = next((c for c in df_deu_raw.columns if "monto" in c.lower() or "total" in c.lower() or "deuda" in c.lower()), df_deu_raw.columns[1])
+        
+        # Filtro estricto: únicamente deudas pendientes
+        df_pendientes = df_deu_raw[df_deu_raw[col_estado].str.strip().str.lower() == "pendiente"].copy()
+        
+        if not df_pendientes.empty:
+            total_por_cobrar = pd.to_numeric(df_pendientes[col_monto], errors="coerce").fillna(0).sum()
+            st.metric("Total por Cobrar", f"${total_por_cobrar:.2f}")
+            
+            st.dataframe(df_pendientes[[col_cliente, col_monto, df_pendientes.columns[2], col_estado]], use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("#### Registrar Abono o Liquidación")
+            
+            c_cli_cobro, c_pago_tipo = st.columns([2, 1])
+            with c_cli_cobro:
+                deudores_activos = sorted(df_pendientes[col_cliente].unique())
+                cliente_sel = st.selectbox("Seleccionar Cliente:", deudores_activos)
+            with c_pago_tipo:
+                forma_abono = st.selectbox("Método de Pago:", ["Efectivo", "Transferencia", "Terminal"], key="metodo_abono")
+                
+            deuda_total_cliente = pd.to_numeric(
+                df_pendientes[df_pendientes[col_cliente] == cliente_sel][col_monto], 
+                errors="coerce"
+            ).fillna(0).sum()
+            
+            st.info(f"Saldo pendiente de **{cliente_sel}**: **${deuda_total_cliente:.2f}**")
+            
+            c_monto_abono, c_btn_accion = st.columns([1.5, 1])
+            with c_monto_abono:
+                monto_abono = st.number_input(
+                    "Monto que abona ($):", 
+                    min_value=1.0, 
+                    max_value=float(deuda_total_cliente), 
+                    value=float(deuda_total_cliente), 
+                    step=5.0
+                )
+            
+            with c_btn_accion:
+                st.write("")
+                st.write("")
+                es_liquidacion = (monto_abono >= deuda_total_cliente)
+                texto_btn = f"Liquidar Total (${monto_abono:.2f})" if es_liquidacion else f"Abonar ${monto_abono:.2f}"
+                
+                if st.button(texto_btn, type="primary", use_container_width=True):
+                    try:
+                        if sh:
+                            ws_deu = sh.worksheet("Deudas")
+                            idx_col_cli = encabezados.index(col_cliente) + 1
+                            idx_col_monto = encabezados.index(col_monto) + 1
+                            idx_col_est = encabezados.index(col_estado) + 1
+                            
+                            abono_restante = monto_abono
+                            
+                            for r_idx, fila in enumerate(deu[1:], start=2):
+                                if len(fila) >= max(idx_col_cli, idx_col_monto, idx_col_est):
+                                    f_cli = fila[idx_col_cli - 1].strip()
+                                    f_est = fila[idx_col_est - 1].strip().lower()
+                                    
+                                    if f_cli == cliente_sel and f_est == "pendiente" and abono_restante > 0:
+                                        try:
+                                            monto_fila = float(fila[idx_col_monto - 1])
+                                        except ValueError:
+                                            monto_fila = 0.0
+                                            
+                                        if abono_restante >= monto_fila:
+                                            ws_deu.update_cell(r_idx, idx_col_est, "Pagado")
+                                            abono_restante -= monto_fila
+                                        else:
+                                            nuevo_saldo_fila = monto_fila - abono_restante
+                                            ws_deu.update_cell(r_idx, idx_col_monto, nuevo_saldo_fila)
+                                            abono_restante = 0
+                            
+                            ws_ops = sh.worksheet("Operaciones")
+                            concepto_caja = "Liquidación de Cuenta" if es_liquidacion else "Abono a Cuenta"
+                            ws_ops.append_row([
+                                cliente_sel, concepto_caja, "Cobro",
+                                monto_abono, forma_abono, st.session_state.cajero,
+                                "Completado", "⚡ Ahora", hoy_str, 
+                                datetime.now(zona_mx).strftime("%H:%M"), 
+                                f"Resta: ${deuda_total_cliente - monto_abono:.2f}"
+                            ])
+                            
+                            st.success(f"Abono de ${monto_abono:.2f} registrado para {cliente_sel}.")
+                            st.cache_data.clear()
+                            st.rerun()
+                    except Exception as err:
+                        st.error(f"Error al procesar el abono: {err}")
+        else:
+            st.success("🎉 No hay deudas pendientes.")
     else:
-        st.info("No hay cuentas pendientes registradas.")
+        st.info("No hay registros en la base de deudas.")
 
 # ==========================================
 # PESTAÑA 7: INVENTARIO
@@ -542,7 +633,7 @@ with tabs[6]:
         st.info("No hay datos de inventario disponibles.")
 
 # ==========================================
-# PESTAÑA 8 Y 9: ADMIN & GASTOS (SI ESTÁ ACTIVO)
+# PESTAÑAS 8 Y 9: ADMIN & GASTOS (SI ESTÁ ACTIVO)
 # ==========================================
 if st.session_state.admin_mode:
     with tabs[7]:
