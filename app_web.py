@@ -740,3 +740,42 @@ if st.session_state.admin_mode:
                 df_s = df_g[df_g['Semana'] == sem]
                 with st.expander(f"Semana: {sem} --- Total: ${df_s['Total'].sum()}"):
                     for _, r in df_s.iterrows(): st.write(f"- {r['Fecha']}: **{r['Concepto']}** ({r['Cantidad']} {r['Unidad']}) ➔ **${r['Total']}**")
+
+
+# --- REEMPLAZA EL BUCLE DONDE RENDERIZAS LA CUADRÍCULA DE PRODUCTOS POR ESTE BLOQUE ---
+
+cols = st.columns(4)
+nv = {}
+
+for ctd, item in enumerate(productos):
+    # Soporta si 'item' es un diccionario, una tupla (nombre, precio) o solo el nombre
+    if isinstance(item, tuple):
+        producto, precio = item[0], item[1]
+    elif isinstance(item, dict):
+        producto = item.get("nombre", f"Producto {ctd}")
+        precio = item.get("precio", 0)
+    else:
+        producto = str(item)
+        precio = None
+
+    label_texto = f"{producto} (${precio})" if precio is not None else str(producto)
+
+    with cols[ctd % 4]:
+        # Clave única para evitar colisiones en session_state
+        state_key = f"cant_{ctd}_{producto}"
+        
+        # Validación estricta: asegura que el valor nunca sea None ni menor a 0
+        raw_val = st.session_state.get(state_key, 0)
+        try:
+            val_seguro = max(0, int(raw_val))
+        except (ValueError, TypeError):
+            val_seguro = 0
+
+        nv[producto] = st.number_input(
+            label=label_texto,
+            min_value=0,
+            value=val_seguro,
+            step=1,
+            key=state_key
+        )
+        
