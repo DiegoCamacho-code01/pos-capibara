@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import csv
 import hashlib
+import html
 import hmac
 import io
 import json
@@ -495,6 +496,18 @@ class Store:
             ]})
             self.worksheet = self.book.worksheet(LOG_SHEET)
 
+    def check_event(self, event):
+        """Consulta fresca sin escribir: verifica la referencia y su contenido."""
+        with self.lock:
+            state = self.read(fresh=True)
+            existing = next((x for x in state["events"] if x["id"] == event["id"]), None)
+            if not existing:
+                return False
+            require(json_text(existing) == json_text(event), "La referencia guardada contiene otro movimiento.")
+            if self.uncertain and self.uncertain["id"] == event["id"]:
+                self.uncertain = None
+            return True
+
     def commit(self, event, role, users):
         with self.lock:
             state = self.read(fresh=True)
@@ -697,21 +710,64 @@ def legacy_preview(book):
 # ---------------------------------------------------------------------------
 CSS = """
 <style>
-.block-container {max-width:980px; padding-top:1rem; padding-bottom:3rem;}
-html, body, [data-testid="stMarkdownContainer"] p {font-size:18px;}
-h1 {font-size:2rem!important;} h2 {font-size:1.55rem!important;}
-.stButton button, .stDownloadButton button, .stLinkButton a, .stFormSubmitButton button {
- min-height:60px!important; border-radius:14px!important; font-size:18px!important;
- font-weight:650!important; white-space:pre-wrap!important; padding:12px!important;}
-.stButton button p, .stFormSubmitButton button p {font-size:18px!important;}
-div[data-baseweb="input"], div[data-baseweb="select"] > div {min-height:52px; font-size:18px;}
-div[role="radiogroup"] {gap:8px; flex-wrap:wrap;}
-div[role="radiogroup"] label {min-height:52px; padding:8px 13px; border:1px solid #8aaea3;
- border-radius:12px; background:rgba(39,114,89,.08);}
-[data-testid="stMetricValue"] {font-size:1.7rem;}
-button[kind="primary"] {background:#16654e; border-color:#16654e;}
+.stApp {background:#f5f7f6;color:#183a31;}
+.block-container {max-width:1100px;padding-top:3.5rem;padding-bottom:4rem;}
+html, body, [data-testid="stMarkdownContainer"] p {font-size:17px;}
+h1 {font-size:1.85rem!important;letter-spacing:-.04em;}
+h2 {font-size:1.45rem!important;} h3 {font-size:1.2rem!important;}
+.stButton button,.stDownloadButton button,.stLinkButton a,.stFormSubmitButton button,
+[data-testid="stBaseButton-segmented_control"], [data-testid="stBaseButton-segmented_controlActive"] {
+ min-height:58px!important;border-radius:12px!important;font-size:17px!important;
+ font-weight:600!important;white-space:pre-wrap!important;padding:12px 16px!important;}
+button p {font-size:17px!important;}
+div[data-baseweb="input"],div[data-baseweb="select"] > div {min-height:52px;font-size:17px;}
+button[kind="primary"] {background:#155b46;border-color:#155b46;color:white;}
+[data-testid="stVerticalBlockBorderWrapper"] > div {border-radius:16px;}
+[data-testid="stMetricValue"] {font-size:2rem;color:#155b46;}
+.faro-account {background:#fff;border:1px solid #d9e3dd;border-left:5px solid #be7c22;
+ padding:20px;border-radius:14px;margin:8px 0 14px;}
+.faro-account h3 {margin:0 0 5px;font-size:1.3rem!important;color:#163f32;}
+.faro-account .amount {font-size:2.3rem;font-weight:750;color:#875516;line-height:1.2;margin:8px 0;}
+.faro-muted {color:#526b60;font-size:15px;}
+[data-testid="stButtonGroup"] button {min-height:54px!important;border-radius:10px!important;padding:10px 16px!important;}
+[data-testid="stButtonGroup"] {gap:8px;}
+@media(max-width:640px) {
+ .block-container {padding-left:1rem;padding-right:1rem;padding-top:3rem;}
+ [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .stButton) {flex-wrap:nowrap;gap:8px;}
+ [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .stButton) > [data-testid="stColumn"] {min-width:0;flex:1 1 0%;}
+ .stButton button {padding:10px!important;}
+}
 </style>
 """
+
+
+def choice(label, options, index=0, horizontal=False, key=None, label_visibility="visible", **kwargs):
+    """Opciones táctiles nativas: sin círculos y sin selección vacía."""
+    default = None if key and key in st.session_state else options[index]
+    return st.segmented_control(label, options, default=default, required=True,
+                                key=key, label_visibility=label_visibility, width="stretch", persist_state="session" if key else None, **kwargs)
+
+
+def account_card(customer, balance):
+    name = html.escape(customer["name"])
+    reference = html.escape(customer.get("reference", "") or "Sin referencia de ubicación")
+    label = "Pendiente de pagar" if balance > 0 else "Saldo a favor" if balance < 0 else "Cuenta liquidada"
+    st.markdown(f'<div class="faro-account"><h3>{name}</h3><div class="faro-muted">{reference}</div>'
+                f'<div class="amount">{money(abs(balance))}</div><div>{label}</div></div>', unsafe_allow_html=True)
+
+
+def cash_prompt(s, user, key):
+    today = (day(), user["id"])
+    if today in s["openings"] and today not in s["closed"]:
+        return True
+    st.info("Abre tu caja del día antes de recibir efectivo; el fondo puede ser $0." if today not in s["openings"]
+            else "Tu caja está cerrada. Solicita al administrador que la reabra antes de recibir efectivo.")
+    if st.button("Ir a mi caja", key=key, width="stretch"):
+        st.session_state.nav_next = "Más"
+        st.session_state.more_page = "Mi caja"
+        st.rerun()
+    return False
+
 
 
 def safe_state(store, fresh=False):
@@ -764,6 +820,8 @@ def finish_action(event):
             st.session_state.pop("editing", None)
         st.session_state.last_order = event["payload"]["id"]
         st.session_state.checkout_version = st.session_state.get("checkout_version", 0) + 1
+    if event["kind"] == "sale":
+        st.session_state.sale_stage_next = "Productos"
     if event["kind"] in {"sale", "payment"} and event["payload"].get("method") == "Efectivo":
         p = event["payload"]
         amount = p["paid"] if event["kind"] == "sale" else p["amount"]
@@ -772,6 +830,7 @@ def finish_action(event):
     if event["kind"] == "bootstrap":
         st.session_state.pop("legacy_preview", None)
     st.session_state.pop("outbox", None)
+    st.session_state.pop("pending_error", None)
     st.session_state.notice = "Guardado correctamente · " + event["id"][:8].upper()
 
 
@@ -786,38 +845,101 @@ def send(store, user, users, kind, payload):
         return False
     except Exception as exc:
         logging.error("Faro escritura %s: %s", event["id"], type(exc).__name__)
-        st.error("No llegó la confirmación. Conservamos el movimiento para verificarlo sin duplicarlo.")
+        st.session_state.pending_error = connection_message(exc)
         st.rerun()
     finish_action(event)
     st.rerun()
+
+
+def connection_message(exc):
+    """Diagnóstico sin mostrar respuestas que puedan contener credenciales."""
+    if isinstance(exc, (DataError, RuleError)):
+        return str(exc)
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    messages = {
+        400: "Google rechazó el formato del movimiento (400). Conserva el comprobante para revisar este caso.",
+        401: "Google no pudo validar la cuenta de servicio (401). Revisa las credenciales de la aplicación.",
+        403: "Google no permite guardar (403). Revisa el permiso de editor de la cuenta de servicio y que la API esté habilitada.",
+        404: "No se encontró la hoja configurada (404). Revisa el documento y sus permisos.",
+        429: "Google alcanzó su límite temporal de solicitudes (429). Espera un minuto antes de consultar de nuevo.",
+    }
+    if code in messages:
+        return messages[code]
+    if isinstance(code, int) and code >= 500:
+        return "Google está respondiendo con un error temporal. Consulta de nuevo en unos momentos."
+    return "No se pudo completar la conexión con Google Sheets. El guardado todavía no está confirmado."
+
+
+def restore_pending(store, user):
+    with st.sidebar.expander("Recuperar un movimiento pendiente"):
+        st.caption("Abre el comprobante de esta misma base si reiniciaste o actualizaste la aplicación.")
+        file = st.file_uploader("Comprobante de recuperación", type=["json"], key="recovery_file")
+        confirmed = st.checkbox("El comprobante corresponde a esta base", key="recovery_base")
+        if st.button("Abrir comprobante", disabled=not file or not confirmed, width="stretch"):
+            try:
+                require(file.size <= 2_000_000, "El comprobante es demasiado grande.")
+                event = json.loads(file.getvalue())
+                require(isinstance(event, dict) and all(k in event for k in ("id", "at", "actor", "kind", "payload")), "Comprobante incompleto.")
+                require(all(isinstance(event[k], str) and event[k] for k in ("id", "at", "actor", "kind")) and isinstance(event["payload"], dict), "Formato de comprobante inválido.")
+                datetime.fromisoformat(event["at"])
+                require(user["role"] == "admin" or user["id"] == event["actor"], "Solo el operador original o un administrador puede recuperarlo.")
+                event = {k: event[k] for k in ("id", "at", "actor", "kind", "payload")}
+                event_rows(event)
+                with store.lock:
+                    other = st.session_state.get("outbox") or store.uncertain
+                    require(not other or json_text(other) == json_text(event), "Primero resuelve el movimiento que ya está pendiente.")
+                    st.session_state.outbox = event
+                st.rerun()
+            except (ValueError, TypeError, RuleError) as exc:
+                st.error(str(exc) if isinstance(exc, RuleError) else "El archivo no es un comprobante válido.")
 
 
 def pending_action(store, user, users):
     event = st.session_state.get("outbox") or store.uncertain
     if not event:
         return
-    st.warning("Hay un movimiento pendiente de confirmación. No lo vuelvas a capturar como nuevo.")
-    st.write("Referencia: " + event["id"][:8].upper() + " · operador: " + event["actor"])
-    st.download_button("Guardar comprobante de recuperación", json_text(event), "movimiento_pendiente.json", "application/json")
+    st.title("Confirmar el último guardado")
+    st.warning("Falta confirmar este movimiento. Conservamos su referencia para evitar duplicarlo.")
+    labels = {"bootstrap": "Importación inicial", "sale": "Venta", "payment": "Cobro"}
+    st.subheader(labels.get(event["kind"], "Movimiento"))
+    st.caption("Referencia: " + event["id"][:8].upper() + " · operador: " + event["actor"])
+    if st.session_state.get("pending_error"):
+        st.error(st.session_state.pending_error)
+    st.write("Primero consulta si Google ya lo guardó. Esta consulta no envía otro movimiento.")
     if user["id"] == event["actor"] or user["role"] == "admin":
-        if st.button("Verificar y reintentar el mismo movimiento", type="primary", width="stretch"):
+        if st.button("Consultar si ya se guardó", type="primary", width="stretch"):
+            try:
+                with st.spinner("Consultando Google Sheets…"):
+                    saved = store.check_event(event)
+                if saved:
+                    finish_action(event)
+                    st.rerun()
+                st.info("La consulta terminó: esta referencia aún no aparece guardada. Puedes reintentar el mismo movimiento.")
+                st.session_state.pop("pending_error", None)
+            except Exception as exc:
+                st.session_state.pending_error = connection_message(exc)
+                st.error(st.session_state.pending_error)
+        if st.button("Reintentar el mismo movimiento", width="stretch"):
             try:
                 role = users.get(event["actor"], {}).get("rol", "operador")
-                store.commit(event, role, users)
+                with st.spinner("Verificando y guardando con la misma referencia…"):
+                    store.commit(event, role, users)
             except RuleError as exc:
-                # Si nunca salió a la red, puede descartarse. Un resultado incierto se conserva.
                 if not store.uncertain:
                     st.session_state.pop("outbox", None)
                     st.session_state.notice = "No se guardó: " + str(exc)
                     st.rerun()
                 st.error(str(exc))
-            except Exception:
-                st.error("Todavía no hay confirmación. Revisa tu conexión antes de reintentar.")
+            except Exception as exc:
+                st.session_state.pending_error = connection_message(exc)
+                st.error(st.session_state.pending_error)
             else:
                 finish_action(event)
                 st.rerun()
     else:
-        st.info("El operador indicado o el administrador puede resolverlo.")
+        st.info("El operador original o el administrador puede resolverlo.")
+    st.download_button("Guardar comprobante de recuperación", json_text(event), "movimiento_pendiente.json", "application/json", width="stretch")
+    st.caption("Descarga el comprobante antes de actualizar o reiniciar. Después puedes abrirlo desde el menú lateral.")
     st.stop()
 
 
@@ -864,7 +986,7 @@ def customer_picker(s, key, allow_anonymous=True):
     if st.session_state.get(key) not in options:
         st.session_state.pop(key, None)
     choice = st.selectbox("Cliente · escribe para buscar", options,
-                          format_func=lambda c: "Sin cliente / venta de mostrador" if not c else by_id[c]["name"] + (" · " + by_id[c].get("reference", "") if by_id[c].get("reference") else ""), key=key)
+                          format_func=lambda c: "Sin cliente / venta de mostrador" if not c else by_id[c]["name"] + (" · " + by_id[c].get("reference", "") if by_id[c].get("reference") else ""), key=key, persist_state="session")
     return by_id.get(choice)
 
 
@@ -913,7 +1035,7 @@ def editor_screen(s):
         options = {}
         if cat in {"Frappés", "Esquimos", "Bebidas Frías", "Smoothies"}:
             milks = ["Entera", "Deslactosada", "Almendra (+$10)"]
-            options["milk"] = st.radio("Leche", milks, index=milks.index(old.get("milk", "Entera")))
+            options["milk"] = choice("Leche", milks, index=milks.index(old.get("milk", "Entera")))
             if options["milk"] != "Entera":
                 extras.append(options["milk"].replace(" (+$10)", ""))
             if "Almendra" in options["milk"]:
@@ -942,7 +1064,7 @@ def editor_screen(s):
                 if options["no_stick"]:
                     extras.append("Sin banderilla")
         if "chilaquiles" in canon(line["name"]):
-            options["salsa"] = st.radio("Salsa", ["Verdes", "Rojos"], index=0 if old.get("salsa", "Verdes") == "Verdes" else 1)
+            options["salsa"] = choice("Salsa", ["Verdes", "Rojos"], index=0 if old.get("salsa", "Verdes") == "Verdes" else 1)
             extras.append("Salsa: " + options["salsa"])
             st.caption("Si lleva telera adicional, agrégala como producto: se cobra y descuenta del inventario.")
         note = st.text_input("Indicaciones", value=line.get("free_note", ""), max_chars=300)
@@ -967,14 +1089,16 @@ def editor_screen(s):
             else:
                 st.session_state.cart = [line if x["id"] == token else x for x in st.session_state.cart]
             st.session_state.pop("editing")
+            st.session_state.sale_stage_next = "Cobrar pedido"
             st.rerun()
     if st.button("Volver sin cambios", width="stretch"):
         st.session_state.pop("editing")
+        st.session_state.sale_stage_next = "Cobrar pedido"
         st.rerun()
 
 
 def sale_screen(store, s, user, users):
-    st.header("🛒 Tomar pedido")
+    st.header("Nueva venta")
     st.session_state.setdefault("cart", [])
     if st.session_state.get("editing"):
         editor_screen(s)
@@ -986,46 +1110,55 @@ def sale_screen(store, s, user, users):
             if st.button("Ver ticket", key="last_ticket", width="stretch"):
                 st.session_state.ticket = dict(order=oid, type="venta")
                 st.rerun()
-    origin = st.radio("Estoy vendiendo desde", LOCATIONS, horizontal=True, key="sale_origin")
-    mode = st.radio("¿De dónde sale el producto?", ["Lo entrego aquí", "Pedir a cocina"], horizontal=True, key="sale_mode")
+    cart = st.session_state.cart
+    total_now = sum(x["qty"] * x["unit"] for x in cart)
+    count = sum(x["qty"] for x in cart)
+    if st.session_state.get("sale_stage_next"):
+        st.session_state.sale_stage = st.session_state.pop("sale_stage_next")
+    stage = choice("Venta", ["Productos", "Cobrar pedido"], key="sale_stage",
+                   format_func=lambda x: x if x == "Productos" else f"Pedido ({count}) · {money(total_now)}")
+    with st.expander("Punto de venta y preparación"):
+        origin = choice("Estoy vendiendo desde", LOCATIONS, horizontal=True, key="sale_origin")
+        mode = choice("¿De dónde sale el producto?", ["Lo entrego aquí", "Pedir a cocina"], horizontal=True, key="sale_mode")
+    st.caption(origin + " · " + mode)
     kitchen = mode == "Pedir a cocina"
-    products = [x for x in s["products"].values() if x["active"] and x["price"] is not None and (kitchen or x["portable"])]
-    search = st.text_input("Buscar producto o sabor", placeholder="Ejemplo: red velvet, milanesa…", key="product_search")
-    if search.strip():
-        query = sort_key(search.strip())
-        products = [x for x in products if query in sort_key(x["name"] + " " + x["category"])]
-    else:
-        categories = sorted({x["category"] for x in products}, key=sort_key)
-        if categories:
-            current = st.session_state.get("category", categories[0])
-            if current not in categories:
-                current = categories[0]
-            cols = st.columns(2)
-            for i, cat in enumerate(categories):
-                if cols[i % 2].button(cat, key="cat_" + cat, type="primary" if cat == current else "secondary", width="stretch"):
-                    st.session_state.category = cat
-                    st.rerun()
-            products = [x for x in products if x["category"] == current]
-    if not products:
-        st.info("No hay productos en esta selección. Revisa el catálogo o cambia a Pedir a cocina.")
-    cols = st.columns(2)
-    location = "Puesto" if kitchen else origin
-    for i, product in enumerate(sorted(products, key=lambda x: sort_key(x["name"]))):
-        stock = min((available(s, location, a) // qty for a, qty in product["recipe"].items()), default=None)
-        label = product["name"] + "\n" + money(product["price"])
-        if stock is not None:
-            label += "\n" + ("Agotado" if stock <= 0 else f"Disponibles: {stock}")
-        if cols[i % 2].button(label, key="prod_" + product["id"], width="stretch", disabled=stock is not None and stock <= 0):
-            line = make_line(product, location, kitchen)
-            if product["category"] in {"Frappés", "Esquimos", "Bebidas Frías", "Chamoyadas", "Refreshers", "Smoothies"} or "chilaquiles" in canon(product["name"]):
-                st.session_state.editing = dict(line=line, new=True)
-            else:
+    if stage == "Productos":
+        products = [x for x in s["products"].values() if x["active"] and x["price"] is not None and (kitchen or x["portable"])]
+        search = st.text_input("Buscar producto o sabor", placeholder="Ejemplo: red velvet, milanesa…", key="product_search")
+        if search.strip():
+            query = sort_key(search.strip())
+            products = [x for x in products if query in sort_key(x["name"] + " " + x["category"])]
+        else:
+            categories = sorted({x["category"] for x in products}, key=sort_key)
+            if categories:
+                current = st.session_state.get("category", categories[0])
+                if current not in categories:
+                    st.session_state.pop("category", None)
+                current = choice("Categoría", categories, key="category")
+                products = [x for x in products if x["category"] == current]
+        if not products:
+            st.info("No hay productos en esta selección. Revisa el catálogo o cambia a Pedir a cocina.")
+        cols = st.columns(2)
+        location = "Puesto" if kitchen else origin
+        for i, product in enumerate(sorted(products, key=lambda x: sort_key(x["name"]))):
+            stock = min((available(s, location, a) // qty for a, qty in product["recipe"].items()), default=None)
+            label = product["name"] + "\n" + money(product["price"])
+            if stock is not None:
+                label += "\n" + ("Agotado" if stock <= 0 else f"Disponibles: {stock}")
+            if cols[i % 2].button(label, key="prod_" + product["id"], width="stretch", disabled=stock is not None and stock <= 0):
+                line = make_line(product, location, kitchen)
                 add_to_cart(line)
+                st.session_state.notice = product["name"] + " agregado al pedido"
+                st.rerun()
+        if cart and st.button("Revisar y cobrar · " + money(total_now), type="primary", width="stretch"):
+            st.session_state.sale_stage_next = "Cobrar pedido"
             st.rerun()
+        st.caption("Un toque agrega una unidad. En Pedido puedes cambiar cantidades, personalizar o programar.")
+        return
     cart = st.session_state.cart
     st.divider()
     if not cart:
-        st.info("Toca un producto para comenzar. Puedes combinar entregas del carrito y pedidos de cocina.")
+        st.info("Tu pedido está vacío. Toca Productos para agregar algo.")
         return
     st.subheader("Tu pedido · " + money(sum(x["qty"] * x["unit"] for x in cart)))
     for line in cart:
@@ -1053,21 +1186,26 @@ def sale_screen(store, s, user, users):
         balance = s["balances"].get(customer["id"], 0)
         st.caption("Saldo anterior: " + money(balance))
     total = sum(x["qty"] * x["unit"] for x in cart)
-    pay_mode = st.radio("Cobro de este pedido", ["A cuenta / paga después", "Paga todo", "Abona una parte"], key="pay_mode_" + version)
+    pay_mode = choice("Cobro de este pedido", ["Paga todo", "A cuenta / paga después", "Abona una parte"], key="pay_mode_" + version)
     paid, method = 0, ""
     if pay_mode != "A cuenta / paga después":
         paid = total if pay_mode == "Paga todo" else cents(st.number_input("Abono de este pedido ($)", min_value=0.0, max_value=total / 100, step=5.0, key="sale_abono_" + version))
-        method = st.radio("Forma de pago", METHODS, horizontal=True, key="sale_method_" + version)
+        method = choice("Forma de pago", METHODS, horizontal=True, key="sale_method_" + version)
         if method == "Efectivo":
-            tender = cents(st.number_input("Recibí un billete / importe de ($)", min_value=0.0, step=10.0, key="sale_tender_" + version))
-            st.write("**Cambio: " + money(max(0, tender - paid)) + "**")
+            change = st.toggle("Calcular cambio", key="sale_change_" + version)
+            tender = cents(st.number_input("Efectivo recibido ($)", min_value=0.0, step=10.0, key="sale_tender_" + version)) if change else paid
+            st.caption("Pago exacto" if not change else "Cambio: " + money(max(0, tender - paid)))
         else:
             tender = paid
             st.caption("Confirma que el pago sí llegó antes de registrarlo.")
     else:
         tender = 0
     st.write("**Total: " + money(total) + " · Pendiente de este pedido: " + money(total - paid) + "**")
-    if st.button("Guardar pedido · " + money(total), type="primary", width="stretch"):
+    missing_customer = customer is None and (paid < total or any(x["kitchen"] for x in cart))
+    if missing_customer:
+        st.info("Selecciona un cliente para identificar la deuda o el pedido de cocina.")
+    cash_ok = cash_prompt(s, user, "sale_open_cash") if paid > 0 and method == "Efectivo" else True
+    if st.button("Guardar pedido · " + money(total), type="primary", width="stretch", disabled=missing_customer or not cash_ok):
         if paid and method == "Efectivo" and tender < paid:
             st.error("El efectivo recibido es menor al importe que vas a cobrar.")
         elif pay_mode == "Abona una parte" and paid <= 0:
@@ -1104,7 +1242,7 @@ def kitchen_screen(store, user, users):
     st.header("👨‍🍳 Cocina")
     st.caption("Última consulta: " + now().strftime("%H:%M:%S") + " · actualización cada 10 segundos mientras esta pantalla está abierta")
     lead = st.select_slider("Anticipación para preparar", options=[5, 10, 15, 20, 30, 45, 60], value=15)
-    mode = st.radio("Mostrar", ["Ahora", "Programados", "Todo"], horizontal=True, key="k_mode")
+    mode = choice("Mostrar", ["Ahora", "Programados", "Todo"], horizontal=True, key="k_mode")
     entries = []
     for order in s["orders"].values():
         lines = [x for x in order["lines"] if x["kitchen"] and x["status"] in {"Por preparar", "Preparando"}]
@@ -1175,73 +1313,114 @@ def deliveries_screen(store, user, users):
 
 
 def payment_screen(store, s, user, users):
-    st.header("💳 Cuentas y cobros")
-    new_customer_form(store, s, user, users, "pay_")
-    search = st.text_input("Buscar cliente o ubicación", key="debt_search")
-    all_clients = st.checkbox("Ver también cuentas liquidadas y saldos a favor")
+    st.header("Cuentas por cobrar")
+    selected = st.session_state.get("selected_debtor")
+    if selected in s["customers"]:
+        if st.button("← Volver a deudores", width="stretch"):
+            st.session_state.pop("selected_debtor", None)
+            st.rerun()
+        customer = s["customers"][selected]
+        balance = s["balances"].get(selected, 0)
+        account_card(customer, balance)
+        prefix = "collect_" + selected + "_" + str(balance)
+        if balance > 0:
+            mode = choice("¿Cuánto paga?", ["Liquidar todo", "Abono parcial"], key=prefix + "mode")
+            amount = balance
+            if mode == "Abono parcial":
+                amount = cents(st.number_input("Abono ($)", min_value=0.0, max_value=balance / 100,
+                                               step=5.0, key=prefix + "amount"))
+            method = choice("Forma de pago", METHODS, key=prefix + "method")
+            tender = amount
+            if method == "Efectivo":
+                change = st.toggle("Calcular cambio", key=prefix + "change")
+                if change:
+                    tender = cents(st.number_input("Efectivo recibido ($)", min_value=0.0, step=10.0, key=prefix + "tender"))
+                    st.metric("Cambio a entregar", money(max(0, tender - amount)))
+                else:
+                    st.caption("Pago exacto · activa Calcular cambio si te entregan más.")
+            else:
+                st.info("Confirma que el pago llegó antes de registrarlo.")
+            st.write("Después de este pago quedará debiendo **" + money(balance - amount) + "**")
+            if tender < amount:
+                st.warning("El efectivo recibido no alcanza para este pago.")
+            cash_ok = cash_prompt(s, user, "collect_open_cash") if method == "Efectivo" else True
+            if st.button("Confirmar cobro · " + money(amount), type="primary", width="stretch",
+                         disabled=amount <= 0 or tender < amount or not cash_ok):
+                send(store, user, users, "payment", dict(customer=selected, amount=amount, method=method, received=tender))
+        elif balance == 0:
+            st.success("Esta cuenta ya está liquidada.")
+        else:
+            st.info("El saldo a favor se compensará con sus próximas compras.")
+            if user["role"] == "admin":
+                with st.expander("Devolver saldo a favor"):
+                    with st.form("refund_" + selected + str(balance)):
+                        amount = st.number_input("Devolver ($)", min_value=0.0, max_value=-balance / 100, value=-balance / 100)
+                        method = choice("Medio de devolución", METHODS)
+                        if st.form_submit_button("Registrar devolución realizada", width="stretch"):
+                            send(store, user, users, "refund", dict(customer=selected, amount=cents(amount), method=method))
+        with st.expander("Ver compras, abonos y entregas"):
+            entries = [x for x in s["history"] if x["customer"] == selected]
+            for h in reversed(entries[-100:]):
+                label = "Abono / ajuste a favor" if h["amount"] < 0 else "Cargo"
+                st.write(f"**{label} · {money(abs(h['amount']))}**")
+                st.caption(f"{datetime.fromisoformat(h['at']).strftime('%d/%m %H:%M')} · {h['detail']} · {h['actor']}")
+            st.caption("Últimos 100 movimientos. El saldo incluye todo el historial. El detalle anterior a V2 sigue en la pestaña Deudas.")
+            for order in s["orders"].values():
+                if order["customer"]["id"] == selected:
+                    for line in order["lines"]:
+                        if line["status"] not in {"Entregado", "Cancelado"}:
+                            st.info(f"{order['folio']} · {line['qty']} × {line['name']} · {line['status']}")
+        with st.expander("Editar ubicación para identificar al cliente"):
+            with st.form("reference_" + selected):
+                reference = st.text_input("Referencia", value=customer.get("reference", ""))
+                if st.form_submit_button("Guardar ubicación", width="stretch"):
+                    send(store, user, users, "customer", dict(customer, reference=reference.strip()))
+        return
+
+    debtors = [c for c in s["customers"].values() if s["balances"].get(c["id"], 0) > 0]
+    total, count = st.columns(2)
+    total.metric("Por cobrar", money(sum(s["balances"][c["id"]] for c in debtors)))
+    count.metric("Personas con deuda", len(debtors))
+    search = st.text_input("Buscar por nombre o ubicación", placeholder="Ejemplo: Brenda, puesto azul…", key="debt_search")
+    order = choice("Ordenar", ["Mayor deuda", "Nombre", "Ubicación"], key="debt_order")
+    all_clients = st.toggle("Incluir cuentas liquidadas y saldos a favor", key="debt_all")
     clients = [c for c in s["customers"].values() if (not c.get("anonymous") or s["balances"].get(c["id"], 0) != 0)
                and (all_clients or s["balances"].get(c["id"], 0) > 0)
-               and sort_key(search) in sort_key(c["name"] + " " + c.get("reference", ""))]
-    clients.sort(key=lambda c: (sort_key(c.get("reference", "")), sort_key(c["name"])))
-    st.caption("Pendiente de cobrar: " + money(sum(max(0, v) for v in s["balances"].values())))
-    selected = st.session_state.get("selected_debtor")
-    for c in clients:
-        label = c["name"] + " · " + money(s["balances"].get(c["id"], 0))
+               and sort_key(search.strip()) in sort_key(c["name"] + " " + c.get("reference", ""))]
+    clients.sort(key=lambda c: ((-s["balances"].get(c["id"], 0) if order == "Mayor deuda" else
+                                sort_key(c.get("reference", "")) if order == "Ubicación" else sort_key(c["name"])), sort_key(c["name"])))
+    filters = (search, order, all_clients)
+    if st.session_state.get("debt_filters") != filters:
+        st.session_state.debt_filters = filters
+        st.session_state.debt_page = 0
+    pages = max(1, (len(clients) + 11) // 12)
+    page = min(st.session_state.get("debt_page", 0), pages - 1)
+    st.caption(f"{len(clients)} cuentas · página {page + 1} de {pages} · toca una para cobrar")
+    for c in clients[page * 12:(page + 1) * 12]:
+        balance = s["balances"].get(c["id"], 0)
+        status = money(balance) + " por cobrar" if balance > 0 else "Liquidado" if balance == 0 else money(-balance) + " a favor"
+        label = c["name"] + "  ·  " + status
         if c.get("reference"):
             label += "\n" + c["reference"]
-        if st.button(label, key="debtor_" + c["id"], width="stretch",
-                     type="primary" if c["id"] == selected else "secondary"):
+        if st.button(label, key="debtor_" + c["id"], width="stretch"):
             st.session_state.selected_debtor = c["id"]
             st.rerun()
+    if pages > 1:
+        prev, nxt = st.columns(2)
+        if prev.button("← Anterior", disabled=page == 0, width="stretch"):
+            st.session_state.debt_page = page - 1
+            st.rerun()
+        if nxt.button("Siguiente →", disabled=page + 1 >= pages, width="stretch"):
+            st.session_state.debt_page = page + 1
+            st.rerun()
     if not clients:
-        st.info("No hay cuentas que coincidan con este filtro.")
-    if selected not in s["customers"]:
-        return
-    c = s["customers"][selected]
-    balance = s["balances"].get(selected, 0)
-    st.divider()
-    st.subheader(c["name"] + " · " + money(balance))
-    if balance < 0:
-        st.info("Saldo a favor del cliente: " + money(-balance) + ". Se compensará con sus próximas compras.")
-    with st.expander("Compras, abonos y productos pendientes", expanded=True):
-        entries = [x for x in s["history"] if x["customer"] == selected]
-        for h in reversed(entries[-100:]):
-            st.write(f"{datetime.fromisoformat(h['at']).strftime('%d/%m %H:%M')} · {h['detail']} · **{money(h['amount'])}** · {h['actor']}")
-        st.caption("Cargos positivos, abonos negativos. El saldo incluye todo el historial; aquí se muestran los últimos 100 movimientos.")
-        for order in s["orders"].values():
-            if order["customer"]["id"] == selected:
-                for line in order["lines"]:
-                    if line["status"] not in {"Entregado", "Cancelado"}:
-                        st.info(f"{order['folio']} · {line['qty']} × {line['name']} · {line['status']} · {datetime.fromisoformat(line['due']).strftime('%d/%m %H:%M')}")
-    if balance > 0:
-        with st.form("collect_form_" + selected + "_" + str(balance)):
-            collect_mode = st.radio("Importe a cobrar", ["Liquidar todo", "Abono parcial"], horizontal=True)
-            entered = st.number_input("Si es parcial, ¿cuánto abona? ($)", min_value=0.0, max_value=balance / 100, value=balance / 100, step=5.0)
-            method = st.radio("Cómo pagó", METHODS, horizontal=True)
-            tender = st.number_input("Si es efectivo, ¿cuánto te entregó? ($)", min_value=0.0, step=10.0)
-            st.caption("El abono reduce la deuda. El billete recibido solo sirve para calcular cambio.")
-            if st.form_submit_button("Registrar cobro", type="primary", width="stretch"):
-                amount = balance if collect_mode == "Liquidar todo" else cents(entered)
-                if method == "Efectivo" and cents(tender) < amount:
-                    st.error("El efectivo recibido es menor al abono.")
-                else:
-                    send(store, user, users, "payment", dict(customer=selected, amount=amount, method=method, received=cents(tender)))
-    if balance < 0 and user["role"] == "admin":
-        with st.form("refund_" + selected + str(balance)):
-            refund_amount = st.number_input("Devolver saldo a favor ($)", min_value=0.0, max_value=-balance / 100, value=-balance / 100)
-            method = st.radio("Medio de devolución", METHODS)
-            if st.form_submit_button("Registrar devolución realizada", width="stretch"):
-                send(store, user, users, "refund", dict(customer=selected, amount=cents(refund_amount), method=method))
-    with st.expander("Editar referencia de ubicación"):
-        with st.form("reference_" + selected):
-            reference = st.text_input("Referencia", value=c.get("reference", ""))
-            if st.form_submit_button("Guardar ubicación"):
-                send(store, user, users, "customer", dict(c, reference=reference.strip()))
+        st.info("No hay cuentas que coincidan con esta búsqueda.")
+    new_customer_form(store, s, user, users, "pay_")
 
 
 def inventory_screen(store, s, user, users):
     st.header("📦 Inventario y carga del carrito")
-    location = st.radio("Ver existencias de", LOCATIONS, horizontal=True)
+    location = choice("Ver existencias de", LOCATIONS, horizontal=True)
     rows = []
     for asset in sorted(s["assets"].values(), key=lambda a: sort_key(a["name"])):
         a = asset["id"]
@@ -1249,7 +1428,7 @@ def inventory_screen(store, s, user, users):
                      "Reservado": reserved(s, location, a), "Libre para vender": available(s, location, a)})
     st.dataframe(rows, hide_index=True, width="stretch")
     st.caption("Una orden de cocina reserva existencias; al empezar a prepararla se consumen. Las ventas de entrega inmediata se descuentan al guardar.")
-    mode = st.radio("Movimiento", ["Entrada de mercancía", "Cargar / regresar carrito", "Merma o cortesía", "Conteo físico"], key="stock_mode")
+    mode = choice("Movimiento", ["Entrada de mercancía", "Cargar / regresar carrito", "Merma o cortesía", "Conteo físico"], key="stock_mode")
     source = location
     target = "Puesto" if source == "Carrito" else "Carrito"
     if mode == "Cargar / regresar carrito":
@@ -1313,7 +1492,7 @@ def cash_screen(store, s, user, users):
         elif transfer["sender"] == actor:
             st.info("Entregaste " + money(transfer["amount"]) + " a " + transfer["target"] + "; falta que confirme.")
     if not closed:
-        mode = st.radio("Registrar", ["Entrega de dinero", "Gasto", "Retiro", "Corte"], horizontal=True)
+        mode = choice("Registrar", ["Entrega de dinero", "Gasto", "Retiro", "Corte"], horizontal=True)
         if mode == "Entrega de dinero":
             others = [x for x in users if x != actor]
             if others:
@@ -1329,7 +1508,7 @@ def cash_screen(store, s, user, users):
             with st.form("cash_out_" + mode):
                 reason = st.text_input("Concepto")
                 amount = st.number_input("Importe ($)", min_value=0.0, step=10.0)
-                method = st.radio("Pagado con", METHODS, horizontal=True)
+                method = choice("Pagado con", METHODS, horizontal=True)
                 st.caption("Solo los movimientos en efectivo se restan de tu caja. Una compra aquí no suma inventario; registra también su entrada.")
                 if st.form_submit_button("Registrar " + mode.lower(), type="primary", width="stretch"):
                     send(store, user, users, "expense" if mode == "Gasto" else "withdraw", dict(amount=cents(amount), reason=reason, method=method))
@@ -1562,6 +1741,7 @@ def main():
     if os.environ.get("FARO_DEMO") == "1":
         st.warning("DEMOSTRACIÓN · Los datos están en memoria y se pierden al reiniciar. Usuario demo / clave solo-demo.")
     user = login(store, users)
+    restore_pending(store, user)
     pending_action(store, user, users)
     s = safe_state(store)
     with st.sidebar:
@@ -1583,8 +1763,8 @@ def main():
         st.success("Cambio a entregar: " + st.session_state.pop("change_notice"))
     if st.session_state.get("nav_next"):
         st.session_state.nav = st.session_state.pop("nav_next")
-    nav = st.radio("Sección", ["Vender", "Cocina", "Entregas", "Cobrar", "Más"], horizontal=True, key="nav", label_visibility="collapsed")
-    if st.button("↻ Actualizar datos", width="stretch"):
+    nav = choice("Sección", ["Vender", "Cobrar", "Cocina", "Entregas", "Más"], horizontal=True, key="nav", label_visibility="collapsed")
+    if st.sidebar.button("↻ Actualizar datos", width="stretch"):
         store.cached = None
         st.rerun()
     ticket_screen(store, s, user, users)
