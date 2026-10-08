@@ -731,6 +731,8 @@ button[kind="primary"] {background:#155b46;border-color:#155b46;color:white;}
 .faro-muted {color:#526b60;font-size:15px;}
 [data-testid="stButtonGroup"] button {min-height:54px!important;border-radius:10px!important;padding:10px 16px!important;}
 [data-testid="stButtonGroup"] {gap:8px;}
+[data-testid="stBaseButton-segmented_controlActive"] {
+ background:#e0eee7!important;border-color:#155b46!important;color:#155b46!important;}
 @media(max-width:640px) {
  .block-container {padding-left:1rem;padding-right:1rem;padding-top:3rem;}
  [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .stButton) {flex-wrap:nowrap;gap:8px;}
@@ -745,7 +747,8 @@ def choice(label, options, index=0, horizontal=False, key=None, label_visibility
     """Opciones táctiles nativas: sin círculos y sin selección vacía."""
     default = None if key and key in st.session_state else options[index]
     return st.segmented_control(label, options, default=default, required=True,
-                                key=key, label_visibility=label_visibility, width="stretch", persist_state="session" if key else None, **kwargs)
+                                key=key, label_visibility=label_visibility, width="stretch",
+                                persist_state=kwargs.pop("persist_state", "session" if key else None), **kwargs)
 
 
 def account_card(customer, balance):
@@ -1021,13 +1024,10 @@ def editor_screen(s):
     edit = st.session_state.editing
     line = copy.deepcopy(edit["line"])
     token = line["id"]
+    prefix = "modifier_" + edit.setdefault("form_id", uid()) + "_"
     st.subheader(line["name"])
-    if edit["new"] and st.button("Agregar clásico · " + money(line["unit"]), type="primary", width="stretch"):
-        add_to_cart(line)
-        st.session_state.pop("editing")
-        st.rerun()
-    with st.form("editor_" + token):
-        qty = st.number_input("Cantidad", min_value=1, max_value=100, value=line["qty"], step=1)
+    with st.container(border=True):
+        qty = st.number_input("Cantidad", min_value=1, max_value=100, value=line["qty"], step=1, key=prefix + "qty")
         # Cada editor tiene claves independientes: no hereda opciones de otro producto.
         cat = line.get("category", "")
         extras, extra_price = [], 0
@@ -1035,45 +1035,53 @@ def editor_screen(s):
         options = {}
         if cat in {"Frappés", "Esquimos", "Bebidas Frías", "Smoothies"}:
             milks = ["Entera", "Deslactosada", "Almendra (+$10)"]
-            options["milk"] = choice("Leche", milks, index=milks.index(old.get("milk", "Entera")))
+            options["milk"] = choice("Leche", milks, index=milks.index(old.get("milk", "Entera")), key=prefix + "milk", persist_state=None)
             if options["milk"] != "Entera":
                 extras.append(options["milk"].replace(" (+$10)", ""))
             if "Almendra" in options["milk"]:
                 extra_price += 1000
-            options["no_sprinkles"] = st.checkbox("Sin chispas", value=old.get("no_sprinkles", False))
+            options["no_sprinkles"] = st.checkbox("Sin chispas", value=old.get("no_sprinkles", False), key=prefix + "no_sprinkles")
             if options["no_sprinkles"]:
                 extras.append("Sin chispas")
             if cat == "Frappés":
-                options["no_cream"] = st.checkbox("Sin crema batida", value=old.get("no_cream", False))
+                options["no_cream"] = st.checkbox("Sin crema batida", value=old.get("no_cream", False), key=prefix + "no_cream")
                 if options["no_cream"]:
                     extras.append("Sin crema batida")
             adorns = ["Sin adorno", "Lechera", "Hershey's", "Caramelo"]
-            options["adorn"] = st.selectbox("Vaso adornado", adorns, index=adorns.index(old.get("adorn", "Sin adorno")))
+            options["adorn"] = st.selectbox("Vaso adornado", adorns, index=adorns.index(old.get("adorn", "Sin adorno")), key=prefix + "adorn")
             if options["adorn"] != "Sin adorno":
                 extras.append("Vaso: " + options["adorn"])
         if cat in {"Chamoyadas", "Refreshers"}:
-            options["pearls"] = st.checkbox("Perlas explosivas (+$10)", value=old.get("pearls", False))
+            options["pearls"] = st.checkbox("Perlas explosivas (+$10)", value=old.get("pearls", False), key=prefix + "pearls")
             if options["pearls"]:
                 extra_price += 1000
                 extras.append("Perlas explosivas")
             if cat == "Chamoyadas":
-                options["no_gummies"] = st.checkbox("Sin gomitas", value=old.get("no_gummies", False))
-                options["no_stick"] = st.checkbox("Sin banderilla", value=old.get("no_stick", False))
+                options["no_gummies"] = st.checkbox("Sin gomitas", value=old.get("no_gummies", False), key=prefix + "no_gummies")
+                options["no_stick"] = st.checkbox("Sin banderilla", value=old.get("no_stick", False), key=prefix + "no_stick")
                 if options["no_gummies"]:
                     extras.append("Sin gomitas")
                 if options["no_stick"]:
                     extras.append("Sin banderilla")
         if "chilaquiles" in canon(line["name"]):
-            options["salsa"] = choice("Salsa", ["Verdes", "Rojos"], index=0 if old.get("salsa", "Verdes") == "Verdes" else 1)
+            options["salsa"] = choice("Salsa", ["Verdes", "Rojos"], index=0 if old.get("salsa", "Verdes") == "Verdes" else 1, key=prefix + "salsa", persist_state=None)
             extras.append("Salsa: " + options["salsa"])
             st.caption("Si lleva telera adicional, agrégala como producto: se cobra y descuenta del inventario.")
-        note = st.text_input("Indicaciones", value=line.get("free_note", ""), max_chars=300)
-        later = st.checkbox("Preparar para una fecha y hora", value=line["scheduled"])
+        note = st.text_input("Indicaciones", value=line.get("free_note", ""), max_chars=300, key=prefix + "note")
+        later = st.toggle("Programar para después", value=line["scheduled"], key=prefix + "later")
         due = datetime.fromisoformat(line["due"])
-        date_input = st.date_input("Fecha de entrega", value=max(due.date(), now().date()), min_value=now().date())
-        hour_input = st.time_input("Hora de entrega", value=due.time().replace(second=0, microsecond=0), step=300)
-        st.caption("La fecha y hora solo se aplican al activar la casilla. Lo programado se prepara en el Puesto.")
-        if st.form_submit_button("Guardar producto y volver", type="primary", width="stretch"):
+        date_input, hour_input = due.date(), due.time()
+        if later:
+            date_input = st.date_input("Fecha de entrega", value=max(due.date(), now().date()), min_value=now().date(), key=prefix + "date")
+            hour_input = st.time_input("Hora de entrega", value=due.time().replace(second=0, microsecond=0), step=300, key=prefix + "time")
+            st.caption("El pedido se enviará a cocina con esta hora de entrega.")
+        unit = line["base_price"] + extra_price
+        st.metric("Total de este producto", money(unit * int(qty)))
+        st.caption(f"{int(qty)} × {money(unit)} · Base {money(line['base_price'])} + extras {money(extra_price)} por unidad")
+        if extras:
+            st.write(" · ".join(extras))
+        action = "Agregar al pedido" if edit["new"] else "Guardar cambios"
+        if st.button(action + " · " + money(unit * int(qty)), type="primary", width="stretch", key=prefix + "save"):
             line.update(qty=int(qty), options=options, free_note=note, notes=" · ".join(extras + ([note] if note else [])),
                         unit=line["base_price"] + extra_price, scheduled=later)
             if later:
@@ -1089,11 +1097,11 @@ def editor_screen(s):
             else:
                 st.session_state.cart = [line if x["id"] == token else x for x in st.session_state.cart]
             st.session_state.pop("editing")
-            st.session_state.sale_stage_next = "Cobrar pedido"
+            st.session_state.sale_stage_next = "Productos" if edit["new"] else "Cobrar pedido"
             st.rerun()
-    if st.button("Volver sin cambios", width="stretch"):
+    if st.button("Volver sin cambios", width="stretch", key=prefix + "cancel"):
         st.session_state.pop("editing")
-        st.session_state.sale_stage_next = "Cobrar pedido"
+        st.session_state.sale_stage_next = "Productos" if edit["new"] else "Cobrar pedido"
         st.rerun()
 
 
@@ -1147,13 +1155,16 @@ def sale_screen(store, s, user, users):
                 label += "\n" + ("Agotado" if stock <= 0 else f"Disponibles: {stock}")
             if cols[i % 2].button(label, key="prod_" + product["id"], width="stretch", disabled=stock is not None and stock <= 0):
                 line = make_line(product, location, kitchen)
-                add_to_cart(line)
-                st.session_state.notice = product["name"] + " agregado al pedido"
+                if product["category"] in {"Frappés", "Esquimos", "Bebidas Frías", "Chamoyadas", "Refreshers", "Smoothies"} or "chilaquiles" in canon(product["name"]):
+                    st.session_state.editing = dict(line=line, new=True)
+                else:
+                    add_to_cart(line)
+                    st.session_state.notice = product["name"] + " agregado al pedido"
                 st.rerun()
         if cart and st.button("Revisar y cobrar · " + money(total_now), type="primary", width="stretch"):
             st.session_state.sale_stage_next = "Cobrar pedido"
             st.rerun()
-        st.caption("Un toque agrega una unidad. En Pedido puedes cambiar cantidades, personalizar o programar.")
+        st.caption("Toca un producto. Si tiene opciones, elige sus extras antes de agregarlo. El precio se calcula automáticamente.")
         return
     cart = st.session_state.cart
     st.divider()
@@ -1228,12 +1239,13 @@ def sale_screen(store, s, user, users):
 
 
 def order_heading(order):
-    st.write(f"**{order['folio']} · {order['customer']['name']}**")
+    st.subheader(order["customer"]["name"])
     if order["customer"].get("reference"):
         st.write("📍 " + order["customer"]["reference"])
-    st.caption("Registró: " + order["actor"])
-    if order.get("legacy"):
-        st.caption("Pedido anterior: importe ya considerado en los saldos importados; no se cobra otra vez.")
+    with st.expander("Detalles del pedido"):
+        st.caption("Referencia: " + order["folio"] + " · Registró: " + order["actor"])
+        if order.get("legacy"):
+            st.caption("Pedido importado. Su importe ya está considerado en la cuenta del cliente.")
 
 
 @st.fragment(run_every="10s")
@@ -1243,8 +1255,16 @@ def kitchen_screen(store, user, users):
     st.caption("Última consulta: " + now().strftime("%H:%M:%S") + " · actualización cada 10 segundos mientras esta pantalla está abierta")
     lead = st.select_slider("Anticipación para preparar", options=[5, 10, 15, 20, 30, 45, 60], value=15)
     mode = choice("Mostrar", ["Ahora", "Programados", "Todo"], horizontal=True, key="k_mode")
+    older = sum(1 for o in s["orders"].values() if o.get("legacy") and any(
+        x["kitchen"] and x["status"] in {"Por preparar", "Preparando"} for x in o["lines"]))
+    source = choice("Pedidos", ["Actuales", "Anteriores"], key="k_source",
+                    format_func=lambda x: f"Anteriores ({older})" if x == "Anteriores" else x)
+    if source == "Anteriores":
+        st.caption("Pedidos importados conservados para revisión. Esta vista no cambia saldos ni marca entregas automáticamente.")
     entries = []
     for order in s["orders"].values():
+        if bool(order.get("legacy")) != (source == "Anteriores"):
+            continue
         lines = [x for x in order["lines"] if x["kitchen"] and x["status"] in {"Por preparar", "Preparando"}]
         for line in lines:
             due = datetime.fromisoformat(line["due"])
@@ -1265,7 +1285,10 @@ def kitchen_screen(store, user, users):
             st.subheader(f"{line['qty']} × {line['name']}")
             if line["scheduled"]:
                 text = "Entrega: " + due.strftime("%d/%m · %H:%M")
-                st.error("Hora cumplida · " + text) if due < now() else st.info(text)
+                if due < now():
+                    st.error("Hora cumplida · " + text)
+                else:
+                    st.info(text)
             else:
                 waiting = max(0, int((now() - datetime.fromisoformat(order["at"])).total_seconds() // 60))
                 st.write(f"Ahora · {waiting} min desde el registro")
@@ -1284,8 +1307,11 @@ def kitchen_screen(store, user, users):
 def deliveries_screen(store, user, users):
     s = safe_state(store)
     st.header("🚚 Entregas")
+    source = choice("Pedidos", ["Actuales", "Anteriores"], key="delivery_source")
     found = False
     for order in sorted(s["orders"].values(), key=lambda o: o["at"]):
+        if bool(order.get("legacy")) != (source == "Anteriores"):
+            continue
         lines = [x for x in order["lines"] if x["status"] in {"Listo", "En reparto"}]
         if not lines:
             continue
