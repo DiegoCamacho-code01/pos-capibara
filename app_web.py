@@ -1,742 +1,1609 @@
-import streamlit as st
-import streamlit.components.v1 as components
-import gspread
+"""Faro Café POS. Python 3.11+. Ejecutar: streamlit run app.py.
+
+Una sola instancia de Streamlit, varios teléfonos. Registro de eventos inmutable
+en Google Sheets; importes enteros en centavos. Ver LEEME.md antes del cambio.
+"""
+from __future__ import annotations
+
+import copy
+import csv
+import hashlib
+import hmac
+import io
 import json
-import pandas as pd
-import re
+import logging
+import os
+import textwrap
+import threading
+import time
+import unicodedata
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+import uuid
+from collections import defaultdict
+from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from zoneinfo import ZoneInfo
 
-# ==========================================
-# 1. CONFIGURACIÓN VISUAL Y CSS ERGONÓMICO
-# ==========================================
-st.set_page_config(page_title="POS Faro Café", layout="wide", initial_sidebar_state="collapsed")
+import gspread
+import streamlit as st
 
-st.markdown("""
-<style>
-    html, body, [class*="css"], .stMarkdown, p, span, label, div { font-size: 19px !important; }
-    h1 { font-size: 32px !important; font-weight: 800 !important; }
-    h2 { font-size: 26px !important; font-weight: 700 !important; }
-    h3 { font-size: 22px !important; font-weight: 700 !important; }
-    
-    .prod-container div.stButton > button { 
-        min-height: 110px !important; border-radius: 20px !important; border: 2px solid #005A9E !important; 
-        font-weight: 700 !important; background-color: #FFFFFF !important; color: #002244 !important; 
-        font-size: 21px !important; box-shadow: 0 4px 10px rgba(0,0,0,0.1) !important;
-        white-space: pre-wrap !important; line-height: 1.25 !important;
-    }
-    .prod-container div.stButton > button:hover { border-color: #003B66 !important; background-color: #F0F7FF !important; }
-    .prod-container div.stButton > button:active { background-color: #CCE5FF !important; transform: scale(0.95) !important; }
+TZ = ZoneInfo("America/Mexico_City")
+LOG_SHEET = "FARO_V2_EVENTOS"
+HEADERS = ["id", "fecha", "operador", "tipo", "parte", "partes", "datos_json", "sha256"]
+LOCATIONS = ["Carrito", "Puesto"]
+METHODS = ["Efectivo", "Transferencia", "Tarjeta"]
+STATES = ["Por preparar", "Preparando", "Listo", "En reparto", "Entregado", "Cancelado"]
+ADMIN_TYPES = {"bootstrap", "product", "asset", "stock_adjust", "cancel_line", "refund", "reopen"}
 
-    div[role="radiogroup"] { gap: 12px !important; flex-wrap: wrap; }
-    div[role="radiogroup"] label {
-        background-color: #F8FBFF !important; border: 2px solid #005A9E !important; border-radius: 20px !important;
-        padding: 10px 20px !important; font-weight: 700 !important; cursor: pointer !important;
-        display: flex !important; justify-content: center !important; align-items: center !important;
-    }
-    div[role="radiogroup"] label input, div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] pre, div[role="radiogroup"] .st-b7, div[role="radiogroup"] .st-b8, div[role="radiogroup"] svg { display: none !important; }
-    div[role="radiogroup"] label[data-baseweb="radio"][aria-checked="true"] { background-color: #005A9E !important; }
-    div[role="radiogroup"] label[data-baseweb="radio"][aria-checked="true"] div { color: #FFFFFF !important; }
 
-    div.stButton > button[kind="primary"] { 
-        background-color: #005A9E !important; color: white !important; border: none !important; font-size: 22px !important;
-        min-height: 85px !important; font-weight: 800 !important; border-radius: 20px !important; box-shadow: 0 4px 8px rgba(0,0,0,0.2) !important;
-    }
-    .btn-imprimir {
-        display: block; width: 100%; background-color: #28A745; color: white !important; text-align: center;
-        padding: 20px; font-size: 24px; font-weight: 900; border-radius: 20px; text-decoration: none;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.2); margin-bottom: 20px;
-    }
-    .btn-imprimir:hover { background-color: #218838; }
+class RuleError(Exception):
+    """El movimiento no cumple una regla de negocio; no se escribió."""
 
-    .cat-container div.stButton > button { min-height: 65px !important; border-radius: 15px !important; font-size: 20px !important; font-weight: 700 !important; box-shadow: 0 2px 5px rgba(0,0,0,0.05) !important; }
-    .card { background-color: #FFFFFF; padding: 20px; border-radius: 20px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border: 2px solid #E1E4E8; }
-    .card-urgente { border: 4px solid #D93025; background-color: #FFF2F2; }
-    .card-programado { border: 4px solid #005A9E; background-color: #F0F7FF; }
-    .card-personalizar { border: 4px solid #FF8C00; background-color: #FFFDF0; border-radius: 20px; padding: 24px; margin-bottom: 20px; }
-    .card-borrador { background-color: #F8FBFF; border: 3px dashed #005A9E; padding: 20px; border-radius: 20px; margin-bottom: 20px; }
-    .sticky-header { position: sticky; top: 0; background-color: white; z-index: 999; padding: 10px 0 15px 0; border-bottom: 2px solid #E1E4E8; }
-</style>
-""", unsafe_allow_html=True)
 
-zona_mx = timezone(timedelta(hours=-6))
-hoy_obj = datetime.now(zona_mx).date()
-hoy_str = hoy_obj.strftime("%d/%m/%Y")
-semana_str = f"{(hoy_obj - timedelta(days=hoy_obj.weekday())).strftime('%d/%m')} al {(hoy_obj - timedelta(days=hoy_obj.weekday()) + timedelta(days=6)).strftime('%d/%m')}"
+class DataError(Exception):
+    """Datos incompletos o alterados: detener, nunca reemplazar por ceros."""
 
-# ==========================================
-# 2. CONEXIÓN Y LECTURA
-# ==========================================
-@st.cache_resource
-def conectar():
+
+def now():
+    return datetime.now(TZ)
+
+
+def day():
+    return now().date().isoformat()
+
+
+def uid():
+    return uuid.uuid4().hex
+
+
+def canon(value):
+    return " ".join(str(value).strip().casefold().split())
+
+
+def sort_key(value):
+    return "".join(c for c in unicodedata.normalize("NFD", str(value).casefold()) if not unicodedata.combining(c))
+
+
+def cents(value):
     try:
-        c = json.loads(st.secrets["google_credentials"], strict=False)
-        return gspread.service_account_from_dict(c).open("Base_POS")
-    except Exception as e: return None
-sh = conectar()
+        number = Decimal(str(value).replace("$", "").replace(",", "").strip())
+        if not number.is_finite():
+            raise ValueError
+        return int((number * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    except (ValueError, InvalidOperation):
+        raise RuleError("Importe inválido. Usa números, por ejemplo 65.50.") from None
 
-@st.cache_data(ttl=600)
-def leer():
-    if not sh: return [], [], [], [], []
-    try: return sh.worksheet("Operaciones").get_all_values(), sh.worksheet("Inventario").get_all_values(), sh.worksheet("Deudas").get_all_values(), sh.worksheet("Historial").get_all_values(), (sh.worksheet("Gastos").get_all_values() if "Gastos" in [w.title for w in sh.worksheets()] else [])
-    except: return [], [], [], [], []
 
-ops, inv, deu, hist, gas = leer()
+def money(value):
+    return f"${value / 100:,.2f}"
 
-if len(ops) > 1:
-    ops_to_update = [{"row": i, "val": "Preparando" if f[2] == "Cocina" else "Listo"} for i, f in enumerate(ops[1:], start=2) if len(f) > 8 and f[6] == "Pendiente" and f[8] == hoy_str]
-    if ops_to_update:
+
+def require(condition, message):
+    if not condition:
+        raise RuleError(message)
+
+
+def json_text(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def initial_state():
+    return dict(products={}, assets={}, customers={}, balances={}, orders={}, payments=[],
+                stock={}, cash=[], openings={}, closed={}, transfers={}, counts=[],
+                prints={}, events=[], initialized=False, history=[])
+
+
+def add_stock(s, location, asset, qty):
+    key = (location, asset)
+    s["stock"][key] = s["stock"].get(key, 0) + qty
+
+
+def add_balance(s, customer, amount, event, detail):
+    s["balances"][customer] = s["balances"].get(customer, 0) + amount
+    s["history"].append(dict(customer=customer, amount=amount, at=event["at"],
+                             actor=event["actor"], detail=detail, event=event["id"]))
+
+
+def add_cash(s, event, owner, amount, detail):
+    s["cash"].append(dict(at=event["at"], date=event["at"][:10], owner=owner,
+                          amount=amount, detail=detail, event=event["id"], actor=event["actor"]))
+
+
+def consume(s, line):
+    if not line.get("consumed"):
+        for asset, qty in line["recipe"].items():
+            add_stock(s, line["location"], asset, -qty * line["qty"])
+        line["consumed"] = True
+
+
+def apply_event(s, event):
+    """Reductor puro. Un evento contiene todos los efectos de la operación."""
+    kind, p = event["kind"], event["payload"]
+    date, actor = event["at"][:10], event["actor"]
+    if kind == "bootstrap":
+        s["initialized"] = True
+        s["products"].update({x["id"]: x for x in p["products"]})
+        s["assets"].update({x["id"]: x for x in p["assets"]})
+        s["customers"].update({x["id"]: x for x in p["customers"]})
+        for cid, amount in p.get("balances", {}).items():
+            if amount:
+                add_balance(s, cid, amount, event, "Saldo anterior importado")
+        for x in p.get("stock", []):
+            add_stock(s, x["location"], x["asset"], x["qty"])
+        for order in p.get("legacy_orders", []):
+            s["orders"][order["id"]] = order
+    elif kind in {"product", "asset", "customer"}:
+        s[{"product": "products", "asset": "assets", "customer": "customers"}[kind]][p["id"]] = p
+    elif kind == "sale":
+        order = copy.deepcopy(p)
+        order.update(at=event["at"], actor=actor, legacy=False)
+        if order["customer"]["id"] not in s["customers"]:
+            s["customers"][order["customer"]["id"]] = order["customer"]
+        s["orders"][order["id"]] = order
+        add_balance(s, order["customer"]["id"], order["total"], event, "Pedido " + order["folio"])
+        for line in order["lines"]:
+            if line["status"] == "Entregado":
+                consume(s, line)
+        if p["paid"]:
+            payment = dict(customer=p["customer"]["id"], amount=p["paid"], method=p["method"],
+                           at=event["at"], actor=actor, id=event["id"], order=p["id"])
+            s["payments"].append(payment)
+            add_balance(s, payment["customer"], -payment["amount"], event, "Cobro " + order["folio"])
+            if payment["method"] == "Efectivo":
+                add_cash(s, event, actor, payment["amount"], "Cobro " + order["folio"])
+    elif kind in {"payment", "refund"}:
+        sign = 1 if kind == "refund" else -1
+        add_balance(s, p["customer"], sign * p["amount"], event,
+                    "Devolución al cliente" if sign == 1 else "Abono · " + p["method"])
+        s["payments"].append(dict(**p, at=event["at"], actor=actor, id=event["id"], refund=sign == 1))
+        if p["method"] == "Efectivo":
+            add_cash(s, event, actor, -sign * p["amount"], "Devolución" if sign == 1 else "Abono")
+    elif kind == "line_state":
+        line = next(x for x in s["orders"][p["order"]]["lines"] if x["id"] == p["line"])
+        line["status"] = p["status"]
+        line["updated_at"] = event["at"]
+        line["updated_by"] = actor
+        if p["status"] in {"Preparando", "Listo", "En reparto", "Entregado"}:
+            consume(s, line)
+    elif kind == "cancel_line":
+        order = s["orders"][p["order"]]
+        line = next(x for x in order["lines"] if x["id"] == p["line"])
+        if p.get("restock") and line.get("consumed"):
+            for asset, qty in line["recipe"].items():
+                add_stock(s, line["location"], asset, qty * line["qty"])
+        line.update(status="Cancelado", cancellation=p["reason"], updated_at=event["at"], updated_by=actor)
+        adjustment = line["qty"] * line["unit"]
+        order["total"] -= adjustment
+        if not order.get("legacy"):
+            add_balance(s, order["customer"]["id"], -adjustment, event, "Cancelación " + order["folio"])
+    elif kind in {"stock_load", "stock_adjust", "stock_loss", "stock_move", "stock_count"}:
+        if kind == "stock_move":
+            for asset, qty in p["items"].items():
+                add_stock(s, p["source"], asset, -qty)
+                add_stock(s, p["target"], asset, qty)
+        elif kind == "stock_count":
+            result = []
+            for asset, counted in p["items"].items():
+                expected = s["stock"].get((p["location"], asset), 0)
+                result.append(dict(asset=asset, expected=expected, counted=counted, difference=counted - expected))
+                if p.get("adjust"):
+                    add_stock(s, p["location"], asset, counted - expected)
+            s["counts"].append(dict(at=event["at"], actor=actor, rows=result, **p))
+        else:
+            for asset, qty in p["items"].items():
+                add_stock(s, p["location"], asset, -qty if kind == "stock_loss" else qty)
+    elif kind == "opening":
+        s["openings"][(date, actor)] = p["amount"]
+        add_cash(s, event, actor, p["amount"], "Fondo inicial")
+    elif kind in {"expense", "withdraw"}:
+        if p["method"] == "Efectivo":
+            add_cash(s, event, actor, -p["amount"], p["reason"])
+    elif kind == "transfer":
+        s["transfers"][event["id"]] = dict(**p, sender=actor, status="Pendiente", at=event["at"])
+        add_cash(s, event, actor, -p["amount"], "Entregado a " + p["target"] + " · por confirmar")
+    elif kind == "transfer_accept":
+        transfer = s["transfers"][p["transfer"]]
+        transfer.update(status="Recibido", received_at=event["at"])
+        add_cash(s, event, actor, transfer["amount"], "Recibido de " + transfer["sender"])
+    elif kind == "close":
+        s["closed"][(date, actor)] = dict(**p, at=event["at"], actor=actor)
+    elif kind == "reopen":
+        s["closed"].pop((date, p["owner"]), None)
+    elif kind == "print_confirm":
+        s["prints"][(p["order"], p["type"])] = event["at"]
+    else:
+        raise DataError("Tipo de evento desconocido: " + kind)
+    s["events"].append(event)
+    return s
+
+
+def replay(events):
+    s = initial_state()
+    for event in events:
+        apply_event(s, copy.deepcopy(event))
+    return s
+
+
+def reserved(s, location, asset):
+    return sum(line["qty"] * line["recipe"].get(asset, 0)
+               for order in s["orders"].values() for line in order["lines"]
+               if line["location"] == location and not line.get("consumed")
+               and line["status"] != "Cancelado")
+
+
+def available(s, location, asset):
+    return s["stock"].get((location, asset), 0) - reserved(s, location, asset)
+
+
+def cash_total(s, owner, date):
+    return sum(x["amount"] for x in s["cash"] if x["owner"] == owner and x["date"] == date)
+
+
+def cash_ready(s, actor, date):
+    require((date, actor) in s["openings"], "Primero registra tu fondo inicial en Más → Mi caja; puede ser $0.")
+    require((date, actor) not in s["closed"], "Tu caja está cerrada. Un administrador debe reabrirla.")
+
+
+def int_amount(value, positive=False):
+    require(type(value) is int and (value > 0 if positive else value >= 0), "Cantidad o importe inválido.")
+
+
+def validate_event(s, event, role="operador", users=()):
+    kind, p, actor = event["kind"], event["payload"], event["actor"]
+    date = event["at"][:10]
+    require(actor in users, "El operador ya no tiene acceso.")
+    if kind in ADMIN_TYPES:
+        require(role == "admin", "Esta operación requiere administrador.")
+    if kind == "bootstrap":
+        require(not s["initialized"], "La importación ya se realizó; no se duplicó.")
+        return
+    require(s["initialized"], "Primero inicializa Faro V2.")
+    if kind == "sale":
+        require(p["id"] not in s["orders"], "Este pedido ya existe.")
+        require(0 < len(p["lines"]) <= 60, "El pedido necesita entre 1 y 60 renglones.")
+        require(len({x["id"] for x in p["lines"]}) == len(p["lines"]), "Hay renglones duplicados.")
+        int_amount(p["paid"])
+        total = 0
+        needs = defaultdict(int)
+        for line in p["lines"]:
+            require(line["product"] in s["products"], "Un producto ya no existe.")
+            product = s["products"][line["product"]]
+            require(product["active"] and product["price"] is not None, "Un producto está desactivado o sin precio.")
+            require(line["base_price"] == product["price"], "Cambió un precio. Actualiza ese producto en el pedido.")
+            require(line["recipe"] == product["recipe"], "Cambió el control de existencias de un producto. Agrégalo de nuevo.")
+            int_amount(line["qty"], True)
+            int_amount(line["unit"])
+            require(line["unit"] >= line["base_price"], "El precio no puede ser menor al precio base.")
+            require(line["location"] in LOCATIONS, "Ubicación inválida.")
+            require(line["status"] in {"Entregado", "Por preparar"}, "Estado inicial inválido.")
+            due = datetime.fromisoformat(line["due"])
+            require(due.tzinfo is not None, "Falta zona horaria.")
+            if line.get("scheduled"):
+                require(due >= datetime.fromisoformat(event["at"]) - timedelta(minutes=2),
+                        "La hora programada ya pasó; corrígela antes de guardar.")
+                require(line["status"] == "Por preparar", "Una entrega futura no puede marcarse entregada.")
+            total += line["unit"] * line["qty"]
+            for asset, qty in line["recipe"].items():
+                needs[(line["location"], asset)] += qty * line["qty"]
+        require(total == p["total"], "El total del pedido no coincide.")
+        require(p["paid"] <= total, "El pago excede el total.")
+        customer = p["customer"]
+        require(customer["id"] and customer["name"].strip(), "Falta cliente.")
+        require(not customer.get("anonymous") or
+                (p["paid"] == total and all(x["status"] == "Entregado" for x in p["lines"])),
+                "Selecciona un cliente para dejar saldo o enviar productos a cocina.")
+        for (location, asset), qty in needs.items():
+            require(available(s, location, asset) >= qty,
+                    f"No alcanza {s['assets'][asset]['name']} en {location}. Revisa la carga o reduce la cantidad.")
+        if p["paid"]:
+            require(p["method"] in METHODS, "Selecciona cómo se recibió el pago.")
+            if p["method"] == "Efectivo":
+                require(p.get("received", p["paid"]) >= p["paid"], "El efectivo recibido no alcanza para el cobro.")
+                cash_ready(s, actor, date)
+    elif kind in {"payment", "refund"}:
+        require(p["customer"] in s["customers"], "Cliente no encontrado.")
+        int_amount(p["amount"], True)
+        require(p["method"] in METHODS, "Método de pago inválido.")
+        balance = s["balances"].get(p["customer"], 0)
+        limit = -balance if kind == "refund" else balance
+        require(p["amount"] <= limit, "El saldo cambió o el importe lo excede. Actualiza y revisa la cuenta.")
+        if p["method"] == "Efectivo":
+            if kind == "payment":
+                require(p.get("received", p["amount"]) >= p["amount"], "El efectivo recibido no alcanza para el abono.")
+            cash_ready(s, actor, date)
+            if kind == "refund":
+                require(cash_total(s, actor, date) >= p["amount"], "No hay suficiente efectivo registrado en tu caja.")
+    elif kind in {"line_state", "cancel_line"}:
+        order = s["orders"].get(p["order"])
+        require(order is not None, "Pedido no encontrado.")
+        line = next((x for x in order["lines"] if x["id"] == p["line"]), None)
+        require(line is not None, "Producto no encontrado.")
+        require(line["status"] == p["expected"], "El estado cambió desde otro teléfono. Actualiza la pantalla.")
+        require(line["status"] != "Cancelado", "El producto ya está cancelado.")
+        if kind == "line_state":
+            transitions = {"Por preparar": ["Preparando"], "Preparando": ["Listo"],
+                           "Listo": ["En reparto", "Entregado"], "En reparto": ["Entregado"]}
+            require(p["status"] in transitions.get(line["status"], []), "Cambio de estado no permitido.")
+        else:
+            require(bool(p["reason"].strip()), "Escribe el motivo de cancelación.")
+            require(not order.get("legacy"), "Cancela los pedidos heredados en la revisión de transición; su importe no es reconstruible.")
+    elif kind in {"product", "asset"}:
+        require(p["id"] and p["name"].strip(), "Falta nombre.")
+        if kind == "product":
+            require(p["category"].strip(), "Falta categoría.")
+            if p["price"] is not None:
+                int_amount(p["price"])
+            require(not p["active"] or p["price"] is not None, "Configura un precio antes de activar.")
+            for asset, qty in p["recipe"].items():
+                require(asset in s["assets"], "Insumo no encontrado.")
+                int_amount(qty, True)
+    elif kind == "customer":
+        require(p["name"].strip(), "Escribe el nombre del cliente.")
+        require(not any(canon(x["name"]) == canon(p["name"]) and x["id"] != p["id"]
+                        for x in s["customers"].values() if not x.get("anonymous")),
+                "Ya existe un cliente con ese nombre; selecciónalo para evitar cuentas duplicadas.")
+    elif kind.startswith("stock_"):
+        require(bool(p["items"]), "No hay cantidades para registrar.")
+        location = p.get("source", p.get("location"))
+        require(location in LOCATIONS, "Ubicación inválida.")
+        for asset, qty in p["items"].items():
+            require(asset in s["assets"], "Insumo desconocido.")
+            if kind == "stock_adjust":
+                require(type(qty) is int, "El ajuste debe ser entero.")
+                require(available(s, location, asset) + qty >= 0, "El ajuste dejaría existencias negativas o sin reservas.")
+            else:
+                int_amount(qty)
+            if kind in {"stock_loss", "stock_move"}:
+                require(available(s, location, asset) >= qty, "No hay suficientes existencias libres.")
+            if kind == "stock_count" and p.get("adjust"):
+                require(role == "admin", "Solo el administrador puede ajustar con un conteo.")
+                require(qty >= reserved(s, location, asset), "El conteo es menor que lo reservado: resuelve esos pedidos antes de ajustar.")
+        if kind == "stock_move":
+            require(p["target"] in LOCATIONS and p["target"] != p["source"], "Elige ubicaciones diferentes.")
+        require(p.get("reason", "").strip(), "Escribe una referencia o motivo.")
+        if kind == "stock_count":
+            require(p["expected"] == {a: s["stock"].get((location, a), 0) for a in p["items"]},
+                    "Hubo movimientos durante el conteo. Actualiza y vuelve a contar al terminar la venta.")
+    elif kind == "opening":
+        int_amount(p["amount"])
+        require((date, actor) not in s["openings"], "Tu fondo inicial ya está registrado hoy.")
+    elif kind in {"expense", "withdraw", "transfer"}:
+        int_amount(p["amount"], True)
+        require(p.get("reason", "").strip(), "Escribe el concepto.")
+        if kind == "transfer":
+            require(p["target"] in users and p["target"] != actor, "Elige otro operador.")
+        else:
+            require(p["method"] in METHODS, "Método inválido.")
+        if kind == "transfer" or p["method"] == "Efectivo":
+            cash_ready(s, actor, date)
+            require(cash_total(s, actor, date) >= p["amount"], "El movimiento supera tu efectivo registrado.")
+    elif kind == "transfer_accept":
+        transfer = s["transfers"].get(p["transfer"])
+        require(transfer and transfer["target"] == actor and transfer["status"] == "Pendiente", "Traspaso no disponible para ti.")
+        cash_ready(s, actor, date)
+    elif kind == "close":
+        cash_ready(s, actor, date)
+        int_amount(p["counted"])
+        require(p["expected"] == cash_total(s, actor, date), "Tu caja cambió mientras contabas. Actualiza antes de cerrar.")
+        require(not any(t["status"] == "Pendiente" and (t["sender"] == actor or t["target"] == actor)
+                        for t in s["transfers"].values()), "Confirma los traspasos pendientes antes del corte.")
+    elif kind == "reopen":
+        require((date, p["owner"]) in s["closed"], "Esa caja no está cerrada hoy.")
+        require(p["reason"].strip(), "Escribe el motivo de reapertura.")
+    elif kind == "print_confirm":
+        require(p["order"] in s["orders"] and p["type"] in {"venta", "cocina"}, "Ticket no encontrado.")
+    else:
+        raise RuleError("Operación desconocida.")
+
+
+def event_rows(event):
+    data = json_text(event["payload"])
+    chunks = [data[i:i + 28000] for i in range(0, len(data), 28000)]
+    digest = hashlib.sha256(data.encode()).hexdigest()
+    require(len(chunks) <= 40, "El movimiento es demasiado grande para importarlo de una vez.")
+    return [[event["id"], event["at"], event["actor"], event["kind"], str(i + 1),
+             str(len(chunks)), chunk, digest] for i, chunk in enumerate(chunks)]
+
+
+def decode_rows(rows):
+    if not rows:
+        return []
+    if rows[0] != HEADERS:
+        raise DataError("La estructura de FARO_V2_EVENTOS no coincide. No edites esa pestaña manualmente.")
+    grouped, result = {}, []
+    for row in rows[1:]:
+        if not any(row):
+            continue
+        if len(row) != 8:
+            raise DataError("Hay un evento incompleto; revisa el respaldo antes de seguir.")
+        eid, at, actor, kind, part, total, data, checksum = row
         try:
-            ws_ops = sh.worksheet("Operaciones")
-            for u in ops_to_update: ws_ops.update_cell(u["row"], 7, u["val"])
-            st.cache_data.clear(); ops, inv, deu, hist, gas = leer()
-        except: pass
+            part, total = int(part), int(total)
+            assert 1 <= part <= total <= 40
+        except (ValueError, AssertionError):
+            raise DataError("Partes inválidas en el registro.") from None
+        meta = (at, actor, kind, total, checksum)
+        if eid not in grouped:
+            grouped[eid] = [meta, {}]
+        old_meta, parts = grouped[eid]
+        if meta != old_meta or (part in parts and parts[part] != data):
+            raise DataError("Dos registros con el mismo folio contienen información diferente.")
+        parts[part] = data  # Reintentos idénticos cuentan una sola vez.
+    for eid, (meta, parts) in grouped.items():
+        at, actor, kind, total, checksum = meta
+        if set(parts) != set(range(1, total + 1)):
+            raise DataError("Movimiento incompleto. No se calcularán saldos con información parcial.")
+        text = "".join(parts[i] for i in range(1, total + 1))
+        if hashlib.sha256(text.encode()).hexdigest() != checksum:
+            raise DataError("Un movimiento fue modificado fuera de la aplicación.")
+        try:
+            payload = json.loads(text)
+            datetime.fromisoformat(at)
+        except (ValueError, TypeError):
+            raise DataError("Datos de un movimiento inválidos.") from None
+        result.append(dict(id=eid, at=at, actor=actor, kind=kind, payload=payload))
+    return result
 
-# ==========================================
-# 3. MEMORIA DE ESTADOS Y UTILIDADES
-# ==========================================
-if 'cajero' not in st.session_state:
-    if st.query_params.get("u", ""): st.session_state.cajero = st.query_params.get("u", "")
+
+class Store:
+    """Serializa escrituras entre sesiones de UNA instancia de Streamlit.
+
+    La caché es compartida, dura 5 s y solo sirve para pantallas. Cada escritura
+    lee el registro fresco bajo el mismo bloqueo y se confirma con un único
+    appendCells atómico. Sheets no ofrece un bloqueo entre distintos servidores.
+    """
+    def __init__(self, book=None):
+        self.book = book
+        self.lock = threading.RLock()
+        self.worksheet = None
+        self.memory = []
+        self.cached = None
+        self.cached_at = 0.0
+        self.login_attempts = {}
+        self.uncertain = None
+
+    def read(self, fresh=False):
+        with self.lock:
+            if self.cached is not None and not fresh and time.monotonic() - self.cached_at < 5:
+                return copy.deepcopy(self.cached)
+            if self.book is None:
+                events = copy.deepcopy(self.memory)
+            else:
+                if self.worksheet is None:
+                    try:
+                        self.worksheet = self.book.worksheet(LOG_SHEET)
+                    except gspread.WorksheetNotFound:
+                        return initial_state()
+                events = decode_rows(self.worksheet.get_all_values())
+            state = replay(events)
+            self.cached = state
+            self.cached_at = time.monotonic()
+            return copy.deepcopy(state)
+
+    def ensure_sheet(self):
+        if self.book is None or self.worksheet is not None:
+            return
+        try:
+            self.worksheet = self.book.worksheet(LOG_SHEET)
+        except gspread.WorksheetNotFound:
+            sheet_id = uuid.uuid4().int % 2000000000
+            self.book.batch_update({"requests": [
+                {"addSheet": {"properties": {"sheetId": sheet_id, "title": LOG_SHEET,
+                 "gridProperties": {"rowCount": 1000, "columnCount": 8, "frozenRowCount": 1}}}},
+                {"appendCells": {"sheetId": sheet_id, "rows": [{"values": [
+                    {"userEnteredValue": {"stringValue": h}} for h in HEADERS]}], "fields": "userEnteredValue"}}
+            ]})
+            self.worksheet = self.book.worksheet(LOG_SHEET)
+
+    def commit(self, event, role, users):
+        with self.lock:
+            state = self.read(fresh=True)
+            existing = next((x for x in state["events"] if x["id"] == event["id"]), None)
+            if existing:
+                require(json_text(existing) == json_text(event), "El identificador corresponde a otro movimiento.")
+                if self.uncertain and self.uncertain["id"] == event["id"]:
+                    self.uncertain = None
+                return state
+            require(not self.uncertain or self.uncertain["id"] == event["id"],
+                    "Hay un movimiento por confirmar. Resuélvelo antes de registrar otro.")
+            validate_event(state, event, role, users)
+            # Precalcular antes de escribir; un fallo del reductor no deja un evento imposible de leer.
+            candidate = apply_event(copy.deepcopy(state), copy.deepcopy(event))
+            if self.book is None:
+                self.memory.append(copy.deepcopy(event))
+            else:
+                self.ensure_sheet()
+                rows = event_rows(event)
+                # RAW stringValue: nombres que empiezan con '=' nunca se convierten en fórmulas.
+                body = {"requests": [{"appendCells": {"sheetId": self.worksheet.id,
+                    "rows": [{"values": [{"userEnteredValue": {"stringValue": str(v)}} for v in row]} for row in rows],
+                    "fields": "userEnteredValue"}}]}
+                try:
+                    self.uncertain = copy.deepcopy(event)
+                    self.book.batch_update(body)
+                except Exception:
+                    self.cached = None  # Resultado incierto: el próximo intento consultará el mismo ID.
+                    raise
+                self.uncertain = None
+            self.cached, self.cached_at = candidate, time.monotonic()
+            return copy.deepcopy(candidate)
+
+
+@st.cache_resource
+def get_store():
+    if os.environ.get("FARO_DEMO") == "1":
+        return Store()
+    raw = st.secrets.get("google_credentials", st.secrets.get("gcp_service_account"))
+    if not raw:
+        raise RuleError("Falta google_credentials en los Secrets de Streamlit.")
+    credentials = json.loads(raw, strict=False) if isinstance(raw, str) else dict(raw)
+    client = gspread.service_account_from_dict(credentials)
+    client.set_timeout(25)
+    spreadsheet_id = st.secrets.get("spreadsheet_id", "")
+    book = client.open_by_key(spreadsheet_id) if spreadsheet_id else client.open("Base_POS")
+    return Store(book)
+
+
+def credentials_config():
+    if os.environ.get("FARO_DEMO") == "1":
+        return {"demo": {"nombre": "Demostración", "pin": "solo-demo", "rol": "admin"},
+                "cocina": {"nombre": "Cocina demo", "pin": "solo-demo", "rol": "operador"}}
+    users = {str(k): dict(v) for k, v in st.secrets.get("usuarios", {}).items()}
+    if st.secrets.get("admin_password"):
+        users.setdefault("admin", {"nombre": "Administrador", "pin": str(st.secrets["admin_password"]), "rol": "admin"})
+    require(users and any(x.get("rol") == "admin" for x in users.values()),
+            "Configura admin_password o un administrador en [usuarios] dentro de Secrets.")
+    for username, user in users.items():
+        require(user.get("rol") in {"admin", "operador"}, f"Revisa el rol de {username} en Secrets.")
+        require(len(str(user.get("pin", ""))) >= 6, f"La clave de {username} necesita al menos 6 caracteres.")
+    return users
+
+
+def seed_catalog():
+    """Precios del archivo recibido. Los productos nuevos quedan pendientes de precio."""
+    products, assets = [], {}
+    def add(cat, name, price, portable=False, stock=False, cup=None, active=True):
+        pid = "p_" + hashlib.sha256((cat + "|" + name).encode()).hexdigest()[:16]
+        recipe = {}
+        if stock:
+            assets[pid] = dict(id=pid, name=name, unit="pieza")
+            recipe[pid] = 1
+        if cup:
+            assets[cup] = dict(id=cup, name="Vaso caliente" if cup == "vaso_caliente" else "Vaso frío", unit="pieza")
+            recipe[cup] = 1
+        products.append(dict(id=pid, name=name, category=cat, price=cents(price) if price is not None else None,
+                             active=active, portable=portable, recipe=recipe))
+    for flavor, price in {"Vainilla":25, "Avellana":25, "Clásico":25, "Crema irlandesa":30,
+                          "Caramelo":30, "Canela":30, "Té":25}.items():
+        name = "Café americano" if flavor == "Clásico" else ("Té" if flavor == "Té" else "Café " + flavor)
+        add("Café caliente", name, price, True, cup="vaso_caliente")
+    add("Café caliente", "Café con crema", None, True, cup="vaso_caliente", active=False)
+    for name, price in {"Ensalada":75, "Sandwich":65, "Plato de Chilaquiles":55, "Torta de Chilaquiles":45}.items():
+        add("Comida", name, price)
+    for name, price in {"Pan de Dulce":25, "Telera":5}.items():
+        add("Panadería", name, price, True, stock=True)
+    for name in ["Torta de jamón", "Torta de queso de puerco", "Torta de milanesa de pollo", "Cuernito preparado"]:
+        add("Tortas y cuernitos", name, None, True, stock=True, active=False)
+    flavors = ["Fresa", "Taro", "Chai", "Matcha", "Rompope", "Red Velvet", "Pistache", "Galleta",
+               "Mora", "Cereza", "Refresher Darks", "Cafe", "Moka", "Oreo", "Chocolate"]
+    for cat, price, prefix in [("Bebidas Frías",45,"Bebida fría de "), ("Frappés",65,"Frappé de "), ("Esquimos",45,"Esquimo de ")]:
+        for flavor in flavors:
+            add(cat, prefix + flavor, price, cup="vaso_frio")
+    for flavor in ["Fresa", "Mango", "Temporada"]:
+        add("Chamoyadas", "Chamoyada de " + flavor, 65, cup="vaso_frio")
+    for flavor in ["Fresa", "Cherry negra", "Guayaba", "Kiwi"]:
+        add("Refreshers", "Refresher de " + flavor, 55, cup="vaso_frio")
+    for name in ["Smoothie (define sabor)", "Muffin", "Galleta de panadería", "Strudel de manzana"]:
+        cat = "Smoothies" if "Smoothie" in name else "Panadería"
+        add(cat, name, None, cat == "Panadería", stock=cat == "Panadería", cup="vaso_frio" if cat == "Smoothies" else None, active=False)
+    return products, list(assets.values())
+
+
+def legacy_product_name(cat, base):
+    if cat == "Café":
+        return "Café caliente", "Café americano" if base in {"Clásico", "Café Clásico"} else ("Té" if base in {"Te", "Té"} else base if "Café" in base else "Café " + base)
+    names = {"Frappés": "Frappé de ", "Esquimos": "Esquimo de ", "Bebidas Frías": "Bebida fría de ",
+             "Chamoyadas": "Chamoyada de ", "Refreshers": "Refresher de "}
+    return ("Comida" if cat == "Platillos" else "Tortas y cuernitos" if "Tortas" in cat else cat,
+            (names[cat] + base) if cat in names and not canon(base).startswith(canon(names[cat])) else base)
+
+
+def legacy_preview(book):
+    products, assets_list = seed_catalog()
+    products = {x["id"]: x for x in products}
+    assets = {x["id"]: x for x in assets_list}
+    customers, balances, stock, warnings, pending = {}, defaultdict(int), [], [], []
+    def read_sheet(name):
+        if book is None:
+            return []
+        try:
+            return book.worksheet(name).get_all_values()
+        except gspread.WorksheetNotFound:
+            return []
+    def client(name):
+        name = " ".join(name.split())
+        key = canon(name)
+        cid = "c_" + hashlib.sha256(key.encode()).hexdigest()[:20]
+        customers.setdefault(cid, dict(id=cid, name=name, reference="", anonymous=False))
+        return cid
+    seen_products = set()
+    for n, row in enumerate(read_sheet("Inventario")[1:], 2):
+        if not any(row):
+            continue
+        require(len(row) >= 4 and row[0].strip(), f"Inventario, fila {n}: faltan nombre, categoría o precio.")
+        name, cat = row[0].strip(), row[2].strip()
+        cat, name = legacy_product_name(cat, name)
+        key = (canon(cat), canon(name))
+        require(key not in seen_products, f"Inventario duplicado: {cat} / {name}. Corrígelo antes de importar.")
+        seen_products.add(key)
+        product = next((x for x in products.values() if (canon(x["category"]), canon(x["name"])) == key), None)
+        if not product:
+            pid = "p_" + hashlib.sha256((cat + "|" + name).encode()).hexdigest()[:16]
+            portable = cat in {"Tortas y cuernitos", "Panadería", "Café caliente"}
+            product = dict(id=pid, name=name, category=cat, portable=portable, recipe={})
+            if cat in {"Tortas y cuernitos", "Panadería"}:
+                product["recipe"] = {pid: 1}
+                assets[pid] = dict(id=pid, name=name, unit="pieza")
+            elif cat in {"Café caliente", "Bebidas Frías", "Frappés", "Esquimos", "Chamoyadas", "Refreshers", "Smoothies"}:
+                product["recipe"] = {"vaso_caliente" if cat == "Café caliente" else "vaso_frio": 1}
+            products[pid] = product
+        price = cents(row[3])
+        require(price >= 0, f"Precio negativo en Inventario, fila {n}.")
+        product.update(price=price, active=len(row) < 5 or canon(row[4]) == "activo")
+        if cat in {"Tortas y cuernitos", "Panadería"} and row[1].strip():
+            try:
+                qty = int(row[1])
+            except ValueError:
+                raise RuleError(f"Existencias inválidas en Inventario, fila {n}.") from None
+            require(qty >= 0, f"Existencias negativas en Inventario, fila {n}. Cuenta y corrige primero.")
+            stock.append(dict(location="Puesto", asset=product["id"], qty=qty))
+    for n, row in enumerate(read_sheet("Deudas")[1:], 2):
+        if not any(row):
+            continue
+        require(len(row) >= 3 and row[0].strip(), f"Deudas, fila {n}: faltan datos.")
+        require(row[1] in {"Deuda", "Abono"}, f"Deudas, fila {n}: tipo desconocido {row[1]}.")
+        amount = cents(row[2])
+        require(amount >= 0, f"Deudas, fila {n}: importe negativo.")
+        balances[client(row[0])] += amount if row[1] == "Deuda" else -amount
+    for n, row in enumerate(read_sheet("Operaciones")[1:], 2):
+        if not any(row):
+            continue
+        if row[0].strip() and row[0] != "Mostrador":
+            client(row[0])
+        if len(row) >= 9 and row[6] in {"Pendiente", "Preparando", "Listo"}:
+            cid = client(row[0].strip() or f"Revisar pedido anterior fila {n}")
+            try:
+                due = datetime.strptime(row[8] + " " + row[5], "%d/%m/%Y %H:%M").replace(tzinfo=TZ)
+            except ValueError:
+                try:
+                    due = datetime.strptime(row[8], "%d/%m/%Y").replace(tzinfo=TZ, hour=12)
+                except ValueError:
+                    raise RuleError(f"Operaciones fila {n}: corrige fecha/hora antes de importar.") from None
+                warnings.append(f"Fila {n}: hora no válida; revisar antes de iniciar, se propone 12:00.")
+            oid = "legacy_" + str(n)
+            pending.append(dict(id=oid, folio="ANT-" + str(n), customer=customers[cid], at=now().isoformat(),
+                actor="Importación", total=0, paid=0, method="", legacy=True, lines=[dict(id=oid, product="legacy",
+                name=row[1], qty=1, unit=0, base_price=0, recipe={}, location="Puesto", kitchen=True,
+                notes=row[3].replace("[IMP]", "").strip(), due=due.isoformat(), scheduled=row[4] != "Inmediato",
+                status="Por preparar" if row[6] == "Pendiente" else row[6], consumed=True)]))
+    warnings.append("Las existencias antiguas se asignan al Puesto. Cuenta vasos y pan; luego registra la carga al Carrito.")
+    warnings.append("Los pedidos anteriores activos se importan solo para preparación/entrega. No generan otro cargo ni consumo; sus saldos vienen de Deudas.")
+    return dict(products=list(products.values()), assets=list(assets.values()), customers=list(customers.values()),
+                balances=dict(balances), stock=stock, legacy_orders=pending, warnings=warnings)
+
+
+# ---------------------------------------------------------------------------
+# Interfaz móvil. No se guardan contraseñas ni credenciales en los eventos.
+# ---------------------------------------------------------------------------
+CSS = """
+<style>
+.block-container {max-width:980px; padding-top:1rem; padding-bottom:3rem;}
+html, body, [data-testid="stMarkdownContainer"] p {font-size:18px;}
+h1 {font-size:2rem!important;} h2 {font-size:1.55rem!important;}
+.stButton button, .stDownloadButton button, .stLinkButton a, .stFormSubmitButton button {
+ min-height:60px!important; border-radius:14px!important; font-size:18px!important;
+ font-weight:650!important; white-space:pre-wrap!important; padding:12px!important;}
+.stButton button p, .stFormSubmitButton button p {font-size:18px!important;}
+div[data-baseweb="input"], div[data-baseweb="select"] > div {min-height:52px; font-size:18px;}
+div[role="radiogroup"] {gap:8px; flex-wrap:wrap;}
+div[role="radiogroup"] label {min-height:52px; padding:8px 13px; border:1px solid #8aaea3;
+ border-radius:12px; background:rgba(39,114,89,.08);}
+[data-testid="stMetricValue"] {font-size:1.7rem;}
+button[kind="primary"] {background:#16654e; border-color:#16654e;}
+</style>
+"""
+
+
+def safe_state(store, fresh=False):
+    try:
+        return store.read(fresh)
+    except DataError as exc:
+        st.error(str(exc))
+    except Exception as exc:
+        logging.error("Faro lectura: %s", type(exc).__name__)
+        st.error("No se pudo actualizar Google Sheets. No se mostrarán saldos como si fueran cero. Revisa la conexión y vuelve a intentar.")
+    if st.button("Volver a consultar", key="retry_read"):
+        st.rerun()
+    st.stop()
+
+
+def login(store, users):
+    current = st.session_state.get("auth")
+    if current:
+        expected = users.get(current["id"])
+        fingerprint = hashlib.sha256(str(expected.get("pin", "")).encode()).hexdigest() if expected else ""
+        if expected and hmac.compare_digest(current["fingerprint"], fingerprint):
+            return dict(id=current["id"], name=expected.get("nombre", current["id"]), role=expected["rol"])
+        st.session_state.clear()
+    st.title("☕ Faro Café")
+    st.write("Entra con tu usuario para registrar tus ventas y cobros.")
+    with st.form("login"):
+        user = st.text_input("Usuario", autocomplete="username").strip()
+        pin = st.text_input("Clave personal", type="password", autocomplete="current-password")
+        submitted = st.form_submit_button("Entrar", type="primary", width="stretch")
+    if submitted:
+        with store.lock:
+            attempts, blocked_until = store.login_attempts.get(user, (0, 0))
+            if blocked_until > time.monotonic():
+                st.error("Espera un minuto antes de volver a intentar.")
+            elif user in users and hmac.compare_digest(pin.encode(), str(users[user].get("pin", "")).encode()):
+                store.login_attempts.pop(user, None)
+                st.session_state.auth = dict(id=user, fingerprint=hashlib.sha256(pin.encode()).hexdigest())
+                st.rerun()
+            else:
+                attempts += 1
+                store.login_attempts[user] = (attempts, time.monotonic() + 60 if attempts >= 5 else 0)
+                st.error("Usuario o clave incorrectos.")
+    st.stop()
+
+
+def finish_action(event):
+    if event["kind"] == "sale":
+        if st.session_state.get("auth", {}).get("id") == event["actor"]:
+            st.session_state.cart = []
+            st.session_state.pop("editing", None)
+        st.session_state.last_order = event["payload"]["id"]
+        st.session_state.checkout_version = st.session_state.get("checkout_version", 0) + 1
+    if event["kind"] in {"sale", "payment"} and event["payload"].get("method") == "Efectivo":
+        p = event["payload"]
+        amount = p["paid"] if event["kind"] == "sale" else p["amount"]
+        if amount:
+            st.session_state.change_notice = money(p.get("received", amount) - amount)
+    if event["kind"] == "bootstrap":
+        st.session_state.pop("legacy_preview", None)
+    st.session_state.pop("outbox", None)
+    st.session_state.notice = "Guardado correctamente · " + event["id"][:8].upper()
+
+
+def send(store, user, users, kind, payload):
+    event = dict(id=uid(), at=now().isoformat(), actor=user["id"], kind=kind, payload=copy.deepcopy(payload))
+    st.session_state.outbox = event
+    try:
+        store.commit(event, user["role"], users)
+    except RuleError as exc:
+        st.session_state.pop("outbox", None)
+        st.error(str(exc))
+        return False
+    except Exception as exc:
+        logging.error("Faro escritura %s: %s", event["id"], type(exc).__name__)
+        st.error("No llegó la confirmación. Conservamos el movimiento para verificarlo sin duplicarlo.")
+        st.rerun()
+    finish_action(event)
+    st.rerun()
+
+
+def pending_action(store, user, users):
+    event = st.session_state.get("outbox") or store.uncertain
+    if not event:
+        return
+    st.warning("Hay un movimiento pendiente de confirmación. No lo vuelvas a capturar como nuevo.")
+    st.write("Referencia: " + event["id"][:8].upper() + " · operador: " + event["actor"])
+    st.download_button("Guardar comprobante de recuperación", json_text(event), "movimiento_pendiente.json", "application/json")
+    if user["id"] == event["actor"] or user["role"] == "admin":
+        if st.button("Verificar y reintentar el mismo movimiento", type="primary", width="stretch"):
+            try:
+                role = users.get(event["actor"], {}).get("rol", "operador")
+                store.commit(event, role, users)
+            except RuleError as exc:
+                # Si nunca salió a la red, puede descartarse. Un resultado incierto se conserva.
+                if not store.uncertain:
+                    st.session_state.pop("outbox", None)
+                    st.session_state.notice = "No se guardó: " + str(exc)
+                    st.rerun()
+                st.error(str(exc))
+            except Exception:
+                st.error("Todavía no hay confirmación. Revisa tu conexión antes de reintentar.")
+            else:
+                finish_action(event)
+                st.rerun()
     else:
-        st.title("Control de Acceso")
-        nom = st.text_input("Nombre del Operador/Cajero:")
-        if st.button("Iniciar Turno", type="primary") and nom.strip():
-            st.query_params["u"] = nom.strip(); st.session_state.cajero = nom.strip(); st.rerun()
+        st.info("El operador indicado o el administrador puede resolverlo.")
+    st.stop()
+
+
+def setup_screen(store, user, users):
+    st.title("Preparar Faro V2")
+    if user["role"] != "admin":
+        st.info("El administrador debe completar la preparación inicial.")
         st.stop()
+    st.write("Se creará una pestaña nueva. Tus hojas Operaciones, Inventario, Deudas, Historial y Gastos se conservan.")
+    st.warning("Haz el cambio cuando hayan terminado de usar la versión anterior. Después todos deben entrar a la misma aplicación nueva.")
+    if st.button("Leer y revisar datos anteriores", width="stretch"):
+        try:
+            st.session_state.legacy_preview = legacy_preview(store.book)
+        except RuleError as exc:
+            st.error(str(exc))
+        except Exception:
+            st.error("No se pudieron leer las hojas. Revisa la conexión y permisos.")
+    preview = st.session_state.get("legacy_preview")
+    if preview:
+        st.write(f"**{len(preview['products'])} productos · {len(preview['customers'])} clientes · {len(preview['legacy_orders'])} pedidos anteriores activos**")
+        st.write("Saldo neto anterior: **" + money(sum(preview["balances"].values())) + "**")
+        for warning in preview["warnings"]:
+            st.info(warning)
+        st.dataframe([dict(Cliente=x["name"], Saldo=money(preview["balances"].get(x["id"], 0))) for x in preview["customers"]], hide_index=True)
+        with st.expander("Revisar productos y precios antes de importar"):
+            st.dataframe([{"Producto": p["name"], "Categoría": p["category"], "Precio": money(p["price"]) if p["price"] is not None else "Por definir", "Activo": p["active"]} for p in preview["products"]], hide_index=True)
+        with st.expander("Revisar pedidos anteriores activos"):
+            for order in preview["legacy_orders"]:
+                line = order["lines"][0]
+                st.write(f"{order['folio']} · {order['customer']['name']} · {line['name']} · {line['due']} · {line['status']}")
+        confirmed = st.checkbox("Revisé saldos, existencias y pedidos. Ya nadie captura en la versión anterior.")
+        if st.button("Crear Faro V2 e importar una sola vez", type="primary", disabled=not confirmed, width="stretch"):
+            send(store, user, users, "bootstrap", preview)
+    st.stop()
 
-for s in ['cart', 'puesto_cart', 'cat_apagadas']: 
-    if s not in st.session_state: st.session_state[s] = []
-if 'admin_mode' not in st.session_state: st.session_state.admin_mode = False
-if 'borrador_voz' not in st.session_state: st.session_state.borrador_voz = None
-if 'prod_edit' not in st.session_state: st.session_state.prod_edit = None
-if 'ticket_imprimir' not in st.session_state: st.session_state.ticket_imprimir = None
-if 'cat_activa' not in st.session_state: st.session_state.cat_activa = "Café"
-if 'cat_puesto_activa' not in st.session_state: st.session_state.cat_puesto_activa = "Café"
 
-# Formato ancho 58mm (Max 32 caracteres por renglón)
-def generar_texto_ticket(cliente, pago, items, total, tipo="venta"):
-    t = "================================\n"
-    t += "           FARO CAFE\n"
-    t += "================================\n"
-    t += f"Fec: {hoy_str}   Hor: {datetime.now(zona_mx).strftime('%H:%M')}\n"
-    t += f"Cli: {cliente.upper()[:27]}\n"
-    if tipo == "venta": t += f"Cobro: {pago.upper()}\n"
-    t += "--------------------------------\n\n"
-    
-    for i in items:
-        t += f"{i['cant']}x {i['prod'].upper()}\n"
-        if i['notas']:
-            t += f"  > EXT: {i['notas'].replace(' [IMP]', '')}\n"
-        if i.get('tiempo') == "🕒 Prog.":
-            t += f"  > ENTREGA: {i['hora']} HRS\n"
-        t += "\n"
-        
-    t += "--------------------------------\n"
-    if tipo == "venta":
-        t += f"TOTAL: $ {total:.2f}\n"
+def customer_picker(s, key, allow_anonymous=True):
+    customers = sorted([c for c in s["customers"].values() if not c.get("anonymous")], key=lambda c: sort_key(c["name"]))
+    by_id = {c["id"]: c for c in customers}
+    options = ([""] if allow_anonymous else []) + list(by_id)
+    if not options:
+        st.info("Agrega primero un cliente.")
+        return None
+    if st.session_state.get(key) not in options:
+        st.session_state.pop(key, None)
+    choice = st.selectbox("Cliente · escribe para buscar", options,
+                          format_func=lambda c: "Sin cliente / venta de mostrador" if not c else by_id[c]["name"] + (" · " + by_id[c].get("reference", "") if by_id[c].get("reference") else ""), key=key)
+    return by_id.get(choice)
+
+
+def new_customer_form(store, s, user, users, prefix):
+    with st.expander("＋ Nuevo cliente"):
+        with st.form(prefix + "new_client", clear_on_submit=True):
+            name = st.text_input("Nombre o referencia reconocible", key=prefix + "name")
+            reference = st.text_input("Dónde encontrarlo", placeholder="Frente a los tacos, puesto azul…", key=prefix + "reference")
+            if st.form_submit_button("Guardar cliente", width="stretch"):
+                send(store, user, users, "customer", dict(id=uid(), name=name.strip(), reference=reference.strip(), anonymous=False))
+
+
+def make_line(product, location, kitchen):
+    return dict(id=uid(), product=product["id"], name=product["name"], category=product["category"],
+                qty=1, base_price=product["price"], unit=product["price"], recipe=copy.deepcopy(product["recipe"]),
+                location=location, kitchen=kitchen, status="Por preparar" if kitchen else "Entregado",
+                due=now().isoformat(), scheduled=False, notes="", consumed=False)
+
+
+def add_to_cart(line):
+    # Comparación solo para agrupar unidades; nunca para asignar el total monetario.
+    fields = ["product", "unit", "notes", "location", "kitchen", "scheduled"]
+    match = next((x for x in st.session_state.cart if all(x[k] == line[k] for k in fields)
+                  and not x["scheduled"] and x["recipe"] == line["recipe"]), None)
+    if match:
+        match["qty"] += line["qty"]
     else:
-        t += "TICKET DE PRODUCCION - COCINA\n"
-    t += "================================\n\n\n"
-    return t
+        st.session_state.cart.append(line)
 
-# ==========================================
-# 4. CONSTRUCCIÓN DINÁMICA DEL MENÚ
-# ==========================================
-MENU_BASE = {
-    "Café": {"Vainilla": 25.0, "Avellana": 25.0, "Clásico": 25.0, "Crema irlandesa": 30.0, "Caramelo": 30.0, "Canela": 30.0, "Te": 25.0},
-    "Platillos": {"Ensalada": 75.0, "Sandwich": 65.0, "Plato de Chilaquiles": 55.0, "Torta de Chilaquiles": 45.0}, 
-    "Tortas": {},
-    "Panadería": {"Pan de Dulce": 25.0, "Telera": 5.0},
-    "Bebidas Frías": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
-    "Frappés": {"Fresa": 65.0, "Taro": 65.0, "Chai": 65.0, "Matcha": 65.0, "Rompope": 65.0, "Red Velvet": 65.0, "Pistache": 65.0, "Galleta": 65.0, "Mora": 65.0, "Cereza": 65.0, "Refresher Darks": 65.0, "Cafe": 65.0, "Moka": 65.0, "Oreo": 65.0, "Chocolate": 65.0},
-    "Esquimos": {"Fresa": 45.0, "Taro": 45.0, "Chai": 45.0, "Matcha": 45.0, "Rompope": 45.0, "Red Velvet": 45.0, "Pistache": 45.0, "Galleta": 45.0, "Mora": 45.0, "Cereza": 45.0, "Refresher Darks": 45.0, "Cafe": 45.0, "Moka": 45.0, "Oreo": 45.0, "Chocolate": 45.0},
-    "Chamoyadas": {"Fresa": 65.0, "Mango": 65.0, "Temporada": 65.0},
-    "Refreshers": {"Fresa": 55.0, "Cherry negra": 55.0, "Guayaba": 55.0, "Kiwi": 55.0},
-}
 
-def armar_nombre(cat, base):
-    if cat == "Café": return f"Café {base}" if "Café" not in base else base
-    if cat == "Frappés": return f"Frappé de {base}"
-    if cat == "Esquimos": return f"Esquimo de {base}"
-    if cat == "Bebidas Frías": return f"Bebida Fría de {base}"
-    if cat == "Chamoyadas": return f"Chamoyada de {base}"
-    if cat == "Refreshers": return f"Refresher de {base}"
-    return base
+def editor_screen(s):
+    edit = st.session_state.editing
+    line = copy.deepcopy(edit["line"])
+    token = line["id"]
+    st.subheader(line["name"])
+    if edit["new"] and st.button("Agregar clásico · " + money(line["unit"]), type="primary", width="stretch"):
+        add_to_cart(line)
+        st.session_state.pop("editing")
+        st.rerun()
+    with st.form("editor_" + token):
+        qty = st.number_input("Cantidad", min_value=1, max_value=100, value=line["qty"], step=1)
+        # Cada editor tiene claves independientes: no hereda opciones de otro producto.
+        cat = line.get("category", "")
+        extras, extra_price = [], 0
+        old = line.get("options", {})
+        options = {}
+        if cat in {"Frappés", "Esquimos", "Bebidas Frías", "Smoothies"}:
+            milks = ["Entera", "Deslactosada", "Almendra (+$10)"]
+            options["milk"] = st.radio("Leche", milks, index=milks.index(old.get("milk", "Entera")))
+            if options["milk"] != "Entera":
+                extras.append(options["milk"].replace(" (+$10)", ""))
+            if "Almendra" in options["milk"]:
+                extra_price += 1000
+            options["no_sprinkles"] = st.checkbox("Sin chispas", value=old.get("no_sprinkles", False))
+            if options["no_sprinkles"]:
+                extras.append("Sin chispas")
+            if cat == "Frappés":
+                options["no_cream"] = st.checkbox("Sin crema batida", value=old.get("no_cream", False))
+                if options["no_cream"]:
+                    extras.append("Sin crema batida")
+            adorns = ["Sin adorno", "Lechera", "Hershey's", "Caramelo"]
+            options["adorn"] = st.selectbox("Vaso adornado", adorns, index=adorns.index(old.get("adorn", "Sin adorno")))
+            if options["adorn"] != "Sin adorno":
+                extras.append("Vaso: " + options["adorn"])
+        if cat in {"Chamoyadas", "Refreshers"}:
+            options["pearls"] = st.checkbox("Perlas explosivas (+$10)", value=old.get("pearls", False))
+            if options["pearls"]:
+                extra_price += 1000
+                extras.append("Perlas explosivas")
+            if cat == "Chamoyadas":
+                options["no_gummies"] = st.checkbox("Sin gomitas", value=old.get("no_gummies", False))
+                options["no_stick"] = st.checkbox("Sin banderilla", value=old.get("no_stick", False))
+                if options["no_gummies"]:
+                    extras.append("Sin gomitas")
+                if options["no_stick"]:
+                    extras.append("Sin banderilla")
+        if "chilaquiles" in canon(line["name"]):
+            options["salsa"] = st.radio("Salsa", ["Verdes", "Rojos"], index=0 if old.get("salsa", "Verdes") == "Verdes" else 1)
+            extras.append("Salsa: " + options["salsa"])
+            st.caption("Si lleva telera adicional, agrégala como producto: se cobra y descuenta del inventario.")
+        note = st.text_input("Indicaciones", value=line.get("free_note", ""), max_chars=300)
+        later = st.checkbox("Preparar para una fecha y hora", value=line["scheduled"])
+        due = datetime.fromisoformat(line["due"])
+        date_input = st.date_input("Fecha de entrega", value=max(due.date(), now().date()), min_value=now().date())
+        hour_input = st.time_input("Hora de entrega", value=due.time().replace(second=0, microsecond=0), step=300)
+        st.caption("La fecha y hora solo se aplican al activar la casilla. Lo programado se prepara en el Puesto.")
+        if st.form_submit_button("Guardar producto y volver", type="primary", width="stretch"):
+            line.update(qty=int(qty), options=options, free_note=note, notes=" · ".join(extras + ([note] if note else [])),
+                        unit=line["base_price"] + extra_price, scheduled=later)
+            if later:
+                dt = datetime.combine(date_input, hour_input, TZ)
+                if dt < now() - timedelta(minutes=1):
+                    st.error("Elige una hora futura.")
+                    return
+                line.update(due=dt.isoformat(), location="Puesto", kitchen=True, status="Por preparar")
+            else:
+                line["due"] = now().isoformat()
+            if edit["new"]:
+                add_to_cart(line)
+            else:
+                st.session_state.cart = [line if x["id"] == token else x for x in st.session_state.cart]
+            st.session_state.pop("editing")
+            st.rerun()
+    if st.button("Volver sin cambios", width="stretch"):
+        st.session_state.pop("editing")
+        st.rerun()
 
-MENU = {k: v.copy() for k, v in MENU_BASE.items()}
-dict_inv, fila_producto_map = {}, {}
 
-if len(inv) > 1:
-    for row_idx, row in enumerate(inv[1:], start=2):
-        if len(row) >= 4 and (row[4].strip().lower() if len(row) >= 5 else "activo") == "activo":
-            prod, cat, precio_str = row[0].strip(), row[2].strip() if len(row) > 2 else "General", row[3].strip() if len(row) > 3 else "0"
-            fila_producto_map[prod] = row_idx
-            if "Tortas" in cat: dict_inv[prod] = int(row[1].strip() if len(row) > 1 else 0)
-            else: dict_inv[prod] = None
-            if cat not in MENU: MENU[cat] = {}
-            try: MENU[cat][prod] = float(precio_str)
-            except: MENU[cat][prod] = 0.0
+def sale_screen(store, s, user, users):
+    st.header("🛒 Tomar pedido")
+    st.session_state.setdefault("cart", [])
+    if st.session_state.get("editing"):
+        editor_screen(s)
+        return
+    if st.session_state.get("last_order") in s["orders"]:
+        oid = st.session_state.last_order
+        with st.expander("Último pedido · " + s["orders"][oid]["folio"]):
+            st.write("Total: " + money(s["orders"][oid]["total"]))
+            if st.button("Ver ticket", key="last_ticket", width="stretch"):
+                st.session_state.ticket = dict(order=oid, type="venta")
+                st.rerun()
+    origin = st.radio("Estoy vendiendo desde", LOCATIONS, horizontal=True, key="sale_origin")
+    mode = st.radio("¿De dónde sale el producto?", ["Lo entrego aquí", "Pedir a cocina"], horizontal=True, key="sale_mode")
+    kitchen = mode == "Pedir a cocina"
+    products = [x for x in s["products"].values() if x["active"] and x["price"] is not None and (kitchen or x["portable"])]
+    search = st.text_input("Buscar producto o sabor", placeholder="Ejemplo: red velvet, milanesa…", key="product_search")
+    if search.strip():
+        query = sort_key(search.strip())
+        products = [x for x in products if query in sort_key(x["name"] + " " + x["category"])]
+    else:
+        categories = sorted({x["category"] for x in products}, key=sort_key)
+        if categories:
+            current = st.session_state.get("category", categories[0])
+            if current not in categories:
+                current = categories[0]
+            cols = st.columns(2)
+            for i, cat in enumerate(categories):
+                if cols[i % 2].button(cat, key="cat_" + cat, type="primary" if cat == current else "secondary", width="stretch"):
+                    st.session_state.category = cat
+                    st.rerun()
+            products = [x for x in products if x["category"] == current]
+    if not products:
+        st.info("No hay productos en esta selección. Revisa el catálogo o cambia a Pedir a cocina.")
+    cols = st.columns(2)
+    location = "Puesto" if kitchen else origin
+    for i, product in enumerate(sorted(products, key=lambda x: sort_key(x["name"]))):
+        stock = min((available(s, location, a) // qty for a, qty in product["recipe"].items()), default=None)
+        label = product["name"] + "\n" + money(product["price"])
+        if stock is not None:
+            label += "\n" + ("Agotado" if stock <= 0 else f"Disponibles: {stock}")
+        if cols[i % 2].button(label, key="prod_" + product["id"], width="stretch", disabled=stock is not None and stock <= 0):
+            line = make_line(product, location, kitchen)
+            if product["category"] in {"Frappés", "Esquimos", "Bebidas Frías", "Chamoyadas", "Refreshers", "Smoothies"} or "chilaquiles" in canon(product["name"]):
+                st.session_state.editing = dict(line=line, new=True)
+            else:
+                add_to_cart(line)
+            st.rerun()
+    cart = st.session_state.cart
+    st.divider()
+    if not cart:
+        st.info("Toca un producto para comenzar. Puedes combinar entregas del carrito y pedidos de cocina.")
+        return
+    st.subheader("Tu pedido · " + money(sum(x["qty"] * x["unit"] for x in cart)))
+    for line in cart:
+        with st.container(border=True):
+            st.write(f"**{line['qty']} × {line['name']} · {money(line['qty'] * line['unit'])}**")
+            st.caption(("Cocina" if line["kitchen"] else "Entrega aquí · " + line["location"]) +
+                       (" · " + datetime.fromisoformat(line["due"]).strftime("%d/%m %H:%M") if line["scheduled"] else " · Ahora"))
+            if line["notes"]:
+                st.write(line["notes"])
+            minus, plus = st.columns(2)
+            if minus.button("− Quitar uno", key="minus_" + line["id"], width="stretch"):
+                line["qty"] -= 1
+                st.session_state.cart = [x for x in cart if x["qty"] > 0]
+                st.rerun()
+            if plus.button("＋ Agregar uno", key="plus_" + line["id"], width="stretch"):
+                line["qty"] += 1
+                st.rerun()
+            if st.button("Personalizar / programar", key="edit_" + line["id"], width="stretch"):
+                st.session_state.editing = dict(line=line, new=False)
+                st.rerun()
+    version = str(st.session_state.get("checkout_version", 0))
+    customer = customer_picker(s, "sale_customer_" + version)
+    new_customer_form(store, s, user, users, "sale_")
+    if customer:
+        balance = s["balances"].get(customer["id"], 0)
+        st.caption("Saldo anterior: " + money(balance))
+    total = sum(x["qty"] * x["unit"] for x in cart)
+    pay_mode = st.radio("Cobro de este pedido", ["A cuenta / paga después", "Paga todo", "Abona una parte"], key="pay_mode_" + version)
+    paid, method = 0, ""
+    if pay_mode != "A cuenta / paga después":
+        paid = total if pay_mode == "Paga todo" else cents(st.number_input("Abono de este pedido ($)", min_value=0.0, max_value=total / 100, step=5.0, key="sale_abono_" + version))
+        method = st.radio("Forma de pago", METHODS, horizontal=True, key="sale_method_" + version)
+        if method == "Efectivo":
+            tender = cents(st.number_input("Recibí un billete / importe de ($)", min_value=0.0, step=10.0, key="sale_tender_" + version))
+            st.write("**Cambio: " + money(max(0, tender - paid)) + "**")
+        else:
+            tender = paid
+            st.caption("Confirma que el pago sí llegó antes de registrarlo.")
+    else:
+        tender = 0
+    st.write("**Total: " + money(total) + " · Pendiente de este pedido: " + money(total - paid) + "**")
+    if st.button("Guardar pedido · " + money(total), type="primary", width="stretch"):
+        if paid and method == "Efectivo" and tender < paid:
+            st.error("El efectivo recibido es menor al importe que vas a cobrar.")
+        elif pay_mode == "Abona una parte" and paid <= 0:
+            st.error("Escribe un abono mayor a cero o selecciona A cuenta.")
+        else:
+            oid = uid()
+            anon = dict(id="walkin_" + oid, name="Mostrador", reference="", anonymous=True)
+            lines = copy.deepcopy(cart)
+            for line in lines:
+                if not line["scheduled"]:
+                    line["due"] = now().isoformat()
+            payload = dict(id=oid, folio=now().strftime("%d%m") + "-" + oid[:6].upper(),
+                           customer=customer or anon, lines=lines, total=total, paid=paid, method=method, received=tender, origin=origin)
+            send(store, user, users, "sale", payload)
+    with st.expander("Descartar este pedido sin guardar"):
+        if st.button("Confirmar: vaciar pedido", width="stretch"):
+            st.session_state.cart = []
+            st.session_state.checkout_version = int(version) + 1
+            st.rerun()
 
-if not MENU.get("Tortas") and "Tortas" in MENU: del MENU["Tortas"]
 
-clientes_unicos = sorted(list(set([f[0] for f in ops[1:] if len(f)>0 and f[0] not in ["", "Mostrador"]] + [f[0] for f in deu[1:] if len(f)>0 and f[0] not in ["", "Mostrador"]])))
-TODOS_LOS_PRODUCTOS = {p_k: {"precio": p_v, "cat": cat_k} for cat_k, p_dict in MENU.items() for p_k, p_v in p_dict.items()}
-LISTA_NOMBRES_PRODUCTOS = sorted(list(TODOS_LOS_PRODUCTOS.keys()))
-if st.session_state.cat_activa not in MENU and len(MENU) > 0: st.session_state.cat_activa = list(MENU.keys())[0]
+def order_heading(order):
+    st.write(f"**{order['folio']} · {order['customer']['name']}**")
+    if order["customer"].get("reference"):
+        st.write("📍 " + order["customer"]["reference"])
+    st.caption("Registró: " + order["actor"])
+    if order.get("legacy"):
+        st.caption("Pedido anterior: importe ya considerado en los saldos importados; no se cobra otra vez.")
 
-# ==========================================
-# 6. SIDEBAR Y TABS
-# ==========================================
-with st.sidebar:
-    st.write(f"**Operador:** {st.session_state.cajero}")
-    if st.text_input("Credencial Admin:", type="password") == "1234": st.session_state.admin_mode = True
-    else: st.session_state.admin_mode = False
 
-pestanas = ["🛒 Carrito", "⚡ Caja Rápida", "👨‍🍳 Cocina", "🚚 Entregas", "📅 Agendados", "💳 Pagos", "📦 Inventario"]
-if st.session_state.admin_mode: pestanas.extend(["⚙️ Admin", "💸 Gastos"])
-tabs = st.tabs(pestanas)
+@st.fragment(run_every="10s")
+def kitchen_screen(store, user, users):
+    s = safe_state(store)
+    st.header("👨‍🍳 Cocina")
+    st.caption("Última consulta: " + now().strftime("%H:%M:%S") + " · actualización cada 10 segundos mientras esta pantalla está abierta")
+    lead = st.select_slider("Anticipación para preparar", options=[5, 10, 15, 20, 30, 45, 60], value=15)
+    mode = st.radio("Mostrar", ["Ahora", "Programados", "Todo"], horizontal=True, key="k_mode")
+    entries = []
+    for order in s["orders"].values():
+        lines = [x for x in order["lines"] if x["kitchen"] and x["status"] in {"Por preparar", "Preparando"}]
+        for line in lines:
+            due = datetime.fromisoformat(line["due"])
+            upcoming = due > now() + timedelta(minutes=lead) and line["status"] == "Por preparar"
+            if mode == "Todo" or (mode == "Programados" and upcoming) or (mode == "Ahora" and not upcoming):
+                entries.append((due, order, line))
+    entries.sort(key=lambda x: (x[0], x[1]["at"]))
+    previous = st.session_state.get("known_kitchen")
+    ids = {line["id"] for _, _, line in entries}
+    if previous is not None and ids - previous:
+        st.toast("Llegaron productos nuevos a esta vista de cocina", icon="🔔")
+    st.session_state.known_kitchen = ids
+    if not entries:
+        st.success("No hay productos pendientes en esta vista.")
+    for due, order, line in entries:
+        with st.container(border=True):
+            order_heading(order)
+            st.subheader(f"{line['qty']} × {line['name']}")
+            if line["scheduled"]:
+                text = "Entrega: " + due.strftime("%d/%m · %H:%M")
+                st.error("Hora cumplida · " + text) if due < now() else st.info(text)
+            else:
+                waiting = max(0, int((now() - datetime.fromisoformat(order["at"])).total_seconds() // 60))
+                st.write(f"Ahora · {waiting} min desde el registro")
+            if line["notes"]:
+                st.warning(line["notes"])
+            st.write("Estado: **" + line["status"] + "**")
+            next_state = "Preparando" if line["status"] == "Por preparar" else "Listo"
+            if st.button("Aceptar y preparar" if next_state == "Preparando" else "✅ Marcar listo", key="k_" + line["id"], type="primary", width="stretch"):
+                send(store, user, users, "line_state", dict(order=order["id"], line=line["id"], expected=line["status"], status=next_state))
+            if st.button("Ticket de cocina", key="kt_" + line["id"], width="stretch"):
+                st.session_state.ticket = dict(order=order["id"], type="cocina")
+                st.rerun()
 
-# ==========================================
-# VISOR GLOBAL DE IMPRESIÓN CON AUTO-REDIRECT
-# ==========================================
-if st.session_state.ticket_imprimir:
-    url_impresion = "rawbt:" + urllib.parse.quote(st.session_state.ticket_imprimir)
-    st.markdown(f'<a href="{url_impresion}" target="_blank" class="btn-imprimir">🖨️ TOCAR AQUÍ PARA IMPRIMIR TICKET EN LA ZEBRA</a>', unsafe_allow_html=True)
-    
-    # Auto-redirección silenciosa usando componentes de HTML
-    components.html(f'''
-        <script>
-            window.parent.location.href = "{url_impresion}";
-        </script>
-    ''', height=0)
 
-    if st.button("✅ Ya se imprimió / Ocultar botón", use_container_width=True):
-        st.session_state.ticket_imprimir = None
+@st.fragment(run_every="10s")
+def deliveries_screen(store, user, users):
+    s = safe_state(store)
+    st.header("🚚 Entregas")
+    found = False
+    for order in sorted(s["orders"].values(), key=lambda o: o["at"]):
+        lines = [x for x in order["lines"] if x["status"] in {"Listo", "En reparto"}]
+        if not lines:
+            continue
+        found = True
+        with st.container(border=True):
+            order_heading(order)
+            balance = s["balances"].get(order["customer"]["id"], 0)
+            st.write("Saldo total del cliente: **" + money(balance) + "**")
+            for line in lines:
+                st.write(f"**{line['qty']} × {line['name']} · {line['status']}**")
+                if line["notes"]:
+                    st.write(line["notes"])
+                if line["status"] == "Listo" and st.button("Me lo llevo a entregar", key="take_" + line["id"], width="stretch"):
+                    send(store, user, users, "line_state", dict(order=order["id"], line=line["id"], expected="Listo", status="En reparto"))
+                if line["status"] == "En reparto":
+                    st.caption("Lo lleva: " + line.get("updated_by", ""))
+                if st.button("✅ Ya lo entregué", key="deliver_" + line["id"], type="primary", width="stretch"):
+                    send(store, user, users, "line_state", dict(order=order["id"], line=line["id"], expected=line["status"], status="Entregado"))
+            if balance > 0 and st.button("Cobrar a este cliente", key="collect_" + order["id"], width="stretch"):
+                st.session_state.selected_debtor = order["customer"]["id"]
+                st.session_state.nav_next = "Cobrar"
+                st.rerun()
+    if not found:
+        st.info("No hay productos listos ni en reparto.")
+
+
+def payment_screen(store, s, user, users):
+    st.header("💳 Cuentas y cobros")
+    new_customer_form(store, s, user, users, "pay_")
+    search = st.text_input("Buscar cliente o ubicación", key="debt_search")
+    all_clients = st.checkbox("Ver también cuentas liquidadas y saldos a favor")
+    clients = [c for c in s["customers"].values() if (not c.get("anonymous") or s["balances"].get(c["id"], 0) != 0)
+               and (all_clients or s["balances"].get(c["id"], 0) > 0)
+               and sort_key(search) in sort_key(c["name"] + " " + c.get("reference", ""))]
+    clients.sort(key=lambda c: (sort_key(c.get("reference", "")), sort_key(c["name"])))
+    st.caption("Pendiente de cobrar: " + money(sum(max(0, v) for v in s["balances"].values())))
+    selected = st.session_state.get("selected_debtor")
+    for c in clients:
+        label = c["name"] + " · " + money(s["balances"].get(c["id"], 0))
+        if c.get("reference"):
+            label += "\n" + c["reference"]
+        if st.button(label, key="debtor_" + c["id"], width="stretch",
+                     type="primary" if c["id"] == selected else "secondary"):
+            st.session_state.selected_debtor = c["id"]
+            st.rerun()
+    if not clients:
+        st.info("No hay cuentas que coincidan con este filtro.")
+    if selected not in s["customers"]:
+        return
+    c = s["customers"][selected]
+    balance = s["balances"].get(selected, 0)
+    st.divider()
+    st.subheader(c["name"] + " · " + money(balance))
+    if balance < 0:
+        st.info("Saldo a favor del cliente: " + money(-balance) + ". Se compensará con sus próximas compras.")
+    with st.expander("Compras, abonos y productos pendientes", expanded=True):
+        entries = [x for x in s["history"] if x["customer"] == selected]
+        for h in reversed(entries[-100:]):
+            st.write(f"{datetime.fromisoformat(h['at']).strftime('%d/%m %H:%M')} · {h['detail']} · **{money(h['amount'])}** · {h['actor']}")
+        st.caption("Cargos positivos, abonos negativos. El saldo incluye todo el historial; aquí se muestran los últimos 100 movimientos.")
+        for order in s["orders"].values():
+            if order["customer"]["id"] == selected:
+                for line in order["lines"]:
+                    if line["status"] not in {"Entregado", "Cancelado"}:
+                        st.info(f"{order['folio']} · {line['qty']} × {line['name']} · {line['status']} · {datetime.fromisoformat(line['due']).strftime('%d/%m %H:%M')}")
+    if balance > 0:
+        with st.form("collect_form_" + selected + "_" + str(balance)):
+            collect_mode = st.radio("Importe a cobrar", ["Liquidar todo", "Abono parcial"], horizontal=True)
+            entered = st.number_input("Si es parcial, ¿cuánto abona? ($)", min_value=0.0, max_value=balance / 100, value=balance / 100, step=5.0)
+            method = st.radio("Cómo pagó", METHODS, horizontal=True)
+            tender = st.number_input("Si es efectivo, ¿cuánto te entregó? ($)", min_value=0.0, step=10.0)
+            st.caption("El abono reduce la deuda. El billete recibido solo sirve para calcular cambio.")
+            if st.form_submit_button("Registrar cobro", type="primary", width="stretch"):
+                amount = balance if collect_mode == "Liquidar todo" else cents(entered)
+                if method == "Efectivo" and cents(tender) < amount:
+                    st.error("El efectivo recibido es menor al abono.")
+                else:
+                    send(store, user, users, "payment", dict(customer=selected, amount=amount, method=method, received=cents(tender)))
+    if balance < 0 and user["role"] == "admin":
+        with st.form("refund_" + selected + str(balance)):
+            refund_amount = st.number_input("Devolver saldo a favor ($)", min_value=0.0, max_value=-balance / 100, value=-balance / 100)
+            method = st.radio("Medio de devolución", METHODS)
+            if st.form_submit_button("Registrar devolución realizada", width="stretch"):
+                send(store, user, users, "refund", dict(customer=selected, amount=cents(refund_amount), method=method))
+    with st.expander("Editar referencia de ubicación"):
+        with st.form("reference_" + selected):
+            reference = st.text_input("Referencia", value=c.get("reference", ""))
+            if st.form_submit_button("Guardar ubicación"):
+                send(store, user, users, "customer", dict(c, reference=reference.strip()))
+
+
+def inventory_screen(store, s, user, users):
+    st.header("📦 Inventario y carga del carrito")
+    location = st.radio("Ver existencias de", LOCATIONS, horizontal=True)
+    rows = []
+    for asset in sorted(s["assets"].values(), key=lambda a: sort_key(a["name"])):
+        a = asset["id"]
+        rows.append({"Producto / insumo": asset["name"], "Físico esperado": s["stock"].get((location, a), 0),
+                     "Reservado": reserved(s, location, a), "Libre para vender": available(s, location, a)})
+    st.dataframe(rows, hide_index=True, width="stretch")
+    st.caption("Una orden de cocina reserva existencias; al empezar a prepararla se consumen. Las ventas de entrega inmediata se descuentan al guardar.")
+    mode = st.radio("Movimiento", ["Entrada de mercancía", "Cargar / regresar carrito", "Merma o cortesía", "Conteo físico"], key="stock_mode")
+    source = location
+    target = "Puesto" if source == "Carrito" else "Carrito"
+    if mode == "Cargar / regresar carrito":
+        st.info("Mover de " + source + " a " + target + ". No es una compra ni una venta.")
+    names = {a["id"]: a["name"] for a in s["assets"].values()}
+    chosen = st.multiselect("Productos o insumos que vas a registrar", sorted(names, key=lambda a: sort_key(names[a])), format_func=lambda a: names[a])
+    with st.form("stock_operation_" + mode + source):
+        quantities = {}
+        for asset in chosen:
+            quantities[asset] = int(st.number_input(names[asset], min_value=0, value=0, step=1, key="sq_" + mode + source + asset))
+        reason = st.text_input("Referencia / motivo", placeholder="Carga de la mañana, compra de vasos, derrame…")
+        adjust = False
+        if mode == "Conteo físico":
+            st.caption("Cuenta cuando no estén vendiendo. El conteo deja evidencia de faltantes y sobrantes.")
+            if user["role"] == "admin":
+                adjust = st.checkbox("Usar el conteo como nuevo saldo físico; conservar la diferencia registrada")
+        if st.form_submit_button("Registrar movimiento", type="primary", width="stretch"):
+            if not quantities:
+                st.error("Selecciona por lo menos un producto o insumo.")
+            elif mode == "Conteo físico":
+                send(store, user, users, "stock_count", dict(location=source, items=quantities, reason=reason,
+                     expected={a: s["stock"].get((source, a), 0) for a in chosen}, adjust=adjust))
+            else:
+                quantities = {a: q for a, q in quantities.items() if q > 0}
+                if mode == "Cargar / regresar carrito":
+                    send(store, user, users, "stock_move", dict(source=source, target=target, items=quantities, reason=reason))
+                else:
+                    kind = "stock_load" if mode == "Entrada de mercancía" else "stock_loss"
+                    send(store, user, users, kind, dict(location=source, items=quantities, reason=reason))
+    with st.expander("Últimos conteos y diferencias"):
+        for count in reversed(s["counts"][-15:]):
+            st.write(f"**{count['at'][:16]} · {count['location']} · {count['actor']}**")
+            st.caption(count["reason"] + (" · Saldo ajustado" if count["adjust"] else " · Solo registro"))
+            st.dataframe([{"Producto": names.get(x["asset"], x["asset"]), "Esperado": x["expected"],
+                           "Contado": x["counted"], "Diferencia": x["difference"]} for x in count["rows"]], hide_index=True)
+
+
+def cash_screen(store, s, user, users):
+    actor, date = user["id"], day()
+    st.header("💵 Mi caja")
+    st.write("Responsable: **" + user["name"] + "** · " + date)
+    if (date, actor) not in s["openings"]:
+        with st.form("opening_" + date):
+            amount = st.number_input("Cambio con el que empiezas hoy ($)", min_value=0.0, step=50.0)
+            st.caption("No es una venta. Si empiezas sin cambio, registra $0. El dinero del día anterior que conserves también se incluye aquí.")
+            if st.form_submit_button("Iniciar mi caja", type="primary", width="stretch"):
+                send(store, user, users, "opening", dict(amount=cents(amount)))
+        return
+    expected = cash_total(s, actor, date)
+    st.metric("Efectivo que deberías tener", money(expected))
+    closed = s["closed"].get((date, actor))
+    if closed:
+        st.success("Caja cerrada · Contado: " + money(closed["counted"]) + " · Diferencia: " + money(closed["counted"] - closed["expected"]))
+    for tid, transfer in s["transfers"].items():
+        if transfer["status"] != "Pendiente":
+            continue
+        if transfer["target"] == actor:
+            st.warning("Por confirmar: " + money(transfer["amount"]) + " de " + users.get(transfer["sender"], {}).get("nombre", transfer["sender"]))
+            if st.button("Ya recibí ese dinero", key="accept_" + tid, width="stretch", disabled=bool(closed)):
+                send(store, user, users, "transfer_accept", dict(transfer=tid))
+        elif transfer["sender"] == actor:
+            st.info("Entregaste " + money(transfer["amount"]) + " a " + transfer["target"] + "; falta que confirme.")
+    if not closed:
+        mode = st.radio("Registrar", ["Entrega de dinero", "Gasto", "Retiro", "Corte"], horizontal=True)
+        if mode == "Entrega de dinero":
+            others = [x for x in users if x != actor]
+            if others:
+                with st.form("cash_transfer"):
+                    target = st.selectbox("¿A quién le entregaste?", others, format_func=lambda x: users[x].get("nombre", x))
+                    amount = st.number_input("Efectivo entregado ($)", min_value=0.0, step=50.0)
+                    reason = st.text_input("Referencia", value="Entrega de efectivo")
+                    if st.form_submit_button("Registrar entrega para que la confirme", type="primary", width="stretch"):
+                        send(store, user, users, "transfer", dict(target=target, amount=cents(amount), reason=reason))
+            else:
+                st.info("Configura los usuarios del equipo para registrar traspasos.")
+        elif mode in {"Gasto", "Retiro"}:
+            with st.form("cash_out_" + mode):
+                reason = st.text_input("Concepto")
+                amount = st.number_input("Importe ($)", min_value=0.0, step=10.0)
+                method = st.radio("Pagado con", METHODS, horizontal=True)
+                st.caption("Solo los movimientos en efectivo se restan de tu caja. Una compra aquí no suma inventario; registra también su entrada.")
+                if st.form_submit_button("Registrar " + mode.lower(), type="primary", width="stretch"):
+                    send(store, user, users, "expense" if mode == "Gasto" else "withdraw", dict(amount=cents(amount), reason=reason, method=method))
+        else:
+            with st.form("cash_close_" + str(expected)):
+                counted = st.number_input("Efectivo que contaste físicamente ($)", min_value=0.0, step=10.0)
+                reason = st.text_input("Observaciones del corte")
+                st.write("Esperado: **" + money(expected) + "**")
+                st.caption("El corte conserva pedidos, cuentas por cobrar e historial. Confirma tus traspasos primero.")
+                if st.form_submit_button("Guardar corte de mi caja", type="primary", width="stretch"):
+                    send(store, user, users, "close", dict(expected=expected, counted=cents(counted), reason=reason))
+    with st.expander("Mis movimientos de efectivo de hoy", expanded=True):
+        for row in s["cash"]:
+            if row["owner"] == actor and row["date"] == date:
+                st.write(f"{row['at'][11:16]} · {row['detail']} · **{money(row['amount'])}**")
+
+
+def export_csv(rows):
+    if not rows:
+        return ""
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(rows[0]))
+    writer.writeheader()
+    for row in rows:
+        # No ejecutar fórmulas al abrir el CSV en Excel.
+        writer.writerow({k: "'" + v if isinstance(v, str) and v[:1] in {"=", "+", "-", "@"} else v for k, v in row.items()})
+    return "\ufeff" + output.getvalue()
+
+
+def reports_screen(store, s, user, users):
+    st.header("📊 Resumen y cortes")
+    report_date = st.date_input("Día a consultar", value=now().date()).isoformat()
+    sales = [o for o in s["orders"].values() if o["at"][:10] == report_date and not o.get("legacy")]
+    payments = [p for p in s["payments"] if p["at"][:10] == report_date]
+    st.metric("Ventas registradas ese día, netas de cancelaciones", money(sum(o["total"] for o in sales)))
+    st.caption("Las cancelaciones corrigen el total del pedido original. Su fecha y autor se conservan en el historial.")
+    for method in METHODS:
+        amount = sum((-1 if p.get("refund") else 1) * p["amount"] for p in payments if p["method"] == method)
+        st.write("**Cobrado neto en " + method.lower() + ": " + money(amount) + "**")
+    st.write("Cuentas por cobrar actuales: **" + money(sum(max(0, b) for b in s["balances"].values())) + "**")
+    st.caption("Cobros incluye abonos de compras anteriores. Cuentas por cobrar es el saldo actual, no un saldo histórico a esa fecha.")
+    expenses = [e for e in s["events"] if e["kind"] == "expense" and e["at"][:10] == report_date]
+    st.write("Gastos del día: **" + money(sum(e["payload"]["amount"] for e in expenses)) + "**")
+    owners = set(users) | {x["owner"] for x in s["cash"] if x["date"] == report_date}
+    cash_rows = []
+    for owner in sorted(owners):
+        close = s["closed"].get((report_date, owner))
+        cash_rows.append({"Responsable": users.get(owner, {}).get("nombre", owner),
+                         "Fondo inicial": money(s["openings"].get((report_date, owner), 0)),
+                         "Efectivo esperado": money(cash_total(s, owner, report_date)),
+                         "Contado": money(close["counted"]) if close else "Sin corte",
+                         "Diferencia": money(close["counted"] - close["expected"]) if close else ""})
+    st.subheader("Dinero por responsable")
+    st.dataframe(cash_rows, hide_index=True, width="stretch")
+    transit = sum(t["amount"] for t in s["transfers"].values() if t["status"] == "Pendiente")
+    st.write("Entregas de dinero pendientes de confirmar, actuales: **" + money(transit) + "**")
+    quantities = defaultdict(lambda: [0, 0])
+    for order in sales:
+        for line in order["lines"]:
+            if line["status"] != "Cancelado":
+                key = (line["product"], line["name"])
+                quantities[key][0] += line["qty"]
+                quantities[key][1] += line["qty"] * line["unit"]
+    st.subheader("Productos vendidos")
+    st.dataframe([{"Producto": name, "Unidades": q, "Venta": money(amount)} for (_, name), (q, amount) in quantities.items()], hide_index=True)
+    details = []
+    for o in sales:
+        for line in o["lines"]:
+            details.append(dict(Folio=o["folio"], Fecha=o["at"], Cliente=o["customer"]["name"],
+                                Operador=o["actor"], Producto=line["name"], Cantidad=line["qty"],
+                                Precio_unitario=line["unit"] / 100, Importe=line["qty"] * line["unit"] / 100,
+                                Estado=line["status"], Entrega=line["due"], Notas=line["notes"]))
+    st.download_button("Descargar productos del día (CSV)", export_csv(details), "ventas_" + report_date + ".csv", "text/csv", width="stretch")
+    st.download_button("Descargar respaldo completo (JSON)", json.dumps(s["events"], ensure_ascii=False, indent=2),
+                       "respaldo_faro_" + day() + ".json", "application/json", width="stretch")
+    closed_today = [u for d, u in s["closed"] if d == day() and u in users]
+    if closed_today:
+        with st.expander("Reabrir una caja de hoy"):
+            with st.form("reopen"):
+                owner = st.selectbox("Responsable", closed_today)
+                reason = st.text_input("Motivo")
+                if st.form_submit_button("Reabrir conservando el corte anterior"):
+                    send(store, user, users, "reopen", dict(owner=owner, reason=reason))
+    with st.expander("Cortes anteriores y reaperturas"):
+        for event in reversed([e for e in s["events"] if e["kind"] in {"close", "reopen"}][-50:]):
+            p = event["payload"]
+            if event["kind"] == "close":
+                st.write(f"{event['at'][:16]} · {event['actor']} · contado {money(p['counted'])} · diferencia {money(p['counted'] - p['expected'])}")
+            else:
+                st.write(f"{event['at'][:16]} · reapertura de {p['owner']} · {p['reason']}")
+
+
+def catalog_screen(store, s, user, users):
+    st.header("⚙️ Catálogo")
+    st.caption("Los nuevos productos sin precio están desactivados. Actívalos cuando confirmes precio y presentación.")
+    pending = [p["name"] for p in s["products"].values() if p["price"] is None]
+    if pending:
+        st.info("Por configurar: " + ", ".join(pending))
+    with st.expander("Agregar insumo controlado: vasos por tamaño, tortas, pan…"):
+        with st.form("asset"):
+            asset_name = st.text_input("Nombre del insumo", placeholder="Vaso caliente 12 oz")
+            if st.form_submit_button("Crear insumo"):
+                send(store, user, users, "asset", dict(id=uid(), name=asset_name.strip(), unit="pieza"))
+    options = [""] + sorted(s["products"], key=lambda pid: sort_key(s["products"][pid]["category"] + " " + s["products"][pid]["name"]))
+    pid = st.selectbox("Producto a editar", options, format_func=lambda x: "＋ Crear nuevo producto" if not x else s["products"][x]["category"] + " · " + s["products"][x]["name"])
+    product = s["products"].get(pid, dict(id=uid(), name="", category="", price=0, portable=False, active=False, recipe={}))
+    with st.form("product_" + (pid or "new")):
+        name = st.text_input("Nombre completo", value=product["name"], placeholder="Frappé de Red Velvet")
+        category = st.text_input("Categoría", value=product["category"], placeholder="Frappés")
+        price = st.number_input("Precio ($)", min_value=0.0, value=(product["price"] or 0) / 100, step=1.0)
+        active = st.checkbox("Disponible para venta", value=product["active"])
+        portable = st.checkbox("Se puede entregar directamente sin preparación en cocina", value=product["portable"])
+        st.write("Insumos por unidad vendida")
+        st.caption("1 vaso por bebida, 1 pieza por torta; 0 significa que no consume ese insumo. Para tamaños distintos crea productos separados.")
+        recipe = {}
+        for asset in sorted(s["assets"].values(), key=lambda a: sort_key(a["name"])):
+            qty = int(st.number_input(asset["name"], min_value=0, max_value=100, value=product["recipe"].get(asset["id"], 0), step=1, key="recipe_" + (pid or "new") + asset["id"]))
+            if qty:
+                recipe[asset["id"]] = qty
+        if st.form_submit_button("Guardar producto", type="primary", width="stretch"):
+            send(store, user, users, "product", dict(id=product["id"], name=name.strip(), category=category.strip(),
+                                                  price=cents(price), active=active, portable=portable, recipe=recipe))
+
+
+def ticket_text(order, kind):
+    width = 32
+    lines = ["=" * width, "FARO CAFE".center(width), "=" * width,
+             "Pedido: " + order["folio"], "Registro: " + datetime.fromisoformat(order["at"]).strftime("%d/%m %H:%M"),
+             "Cliente: " + order["customer"]["name"]]
+    if order["customer"].get("reference"):
+        lines.append("Lugar: " + order["customer"]["reference"])
+    lines.extend(["Operador: " + order["actor"], "-" * width])
+    selected = [x for x in order["lines"] if x["status"] != "Cancelado" and (kind != "cocina" or x["kitchen"])]
+    for line in selected:
+        lines.append(f"{line['qty']} x {line['name']}")
+        if kind == "venta":
+            lines.append(f" {money(line['unit'])} c/u = {money(line['unit'] * line['qty'])}")
+        if line["notes"]:
+            lines.append("NOTAS: " + line["notes"])
+        lines.append("Entrega: " + datetime.fromisoformat(line["due"]).strftime("%d/%m %H:%M") if line["scheduled"] else "Entrega: ahora")
+        lines.append("Estado: " + line["status"])
+        lines.append("")
+    if kind == "venta":
+        lines.append("TOTAL PEDIDO: " + money(order["total"]))
+        if order.get("legacy"):
+            lines.append("Pedido anterior: consultar cuenta")
+        else:
+            lines.append("Pago inicial: " + money(order["paid"]))
+            lines.append("Abonos posteriores: ver cuenta")
+    else:
+        lines.append("COMANDA DE COCINA")
+    lines.extend(["=" * width, "Gracias por tu compra", "", "", ""])
+    # Ajustar todas las líneas; no truncar nombres, cantidades ni notas.
+    return "\n".join("\n".join(textwrap.wrap(line, width=width, replace_whitespace=False)) if line else "" for line in lines)
+
+
+def ticket_screen(store, s, user, users):
+    ticket = st.session_state.get("ticket")
+    if not ticket:
+        return
+    order = s["orders"].get(ticket["order"])
+    if not order:
+        st.session_state.pop("ticket", None)
+        return
+    st.subheader("🖨️ Ticket · " + order["folio"])
+    text = ticket_text(order, ticket["type"])
+    printed = s["prints"].get((order["id"], ticket["type"]))
+    if printed:
+        st.info("Hay una impresión confirmada: " + printed[:16] + ". Puedes reimprimir si lo necesitas.")
+    st.code(text, language=None)
+    url = "rawbt:" + urllib.parse.quote(text, safe="")
+    # Sin auto-redirección: no dispara impresiones al cambiar de pantalla.
+    st.markdown(f'<a href="{url}" style="display:block;background:#16654e;color:white;text-align:center;padding:20px;border-radius:14px;text-decoration:none;font-size:20px">Abrir RawBT e imprimir</a>', unsafe_allow_html=True)
+    st.caption("Requiere RawBT e impresora compatible configurada en el teléfono. No se considera impreso hasta que tú lo confirmes.")
+    st.download_button("Descargar ticket TXT", text, "ticket_" + order["folio"] + ".txt", "text/plain", width="stretch")
+    if st.button("Confirmo que salió el ticket", type="primary", width="stretch"):
+        send(store, user, users, "print_confirm", dict(order=order["id"], type=ticket["type"]))
+    if st.button("Cerrar ticket", width="stretch"):
+        st.session_state.pop("ticket", None)
         st.rerun()
     st.divider()
 
-# ==========================================
-# PESTAÑA 1: CARRITO
-# ==========================================
-with tabs[0]:
-    # POP-UP DE PERSONALIZACIÓN
-    if st.session_state.prod_edit:
-        pe = st.session_state.prod_edit
-        st.markdown(f'<div class="card-personalizar"><h2>⚙️ {armar_nombre(pe["cat"], pe["nombre"])}</h2>', unsafe_allow_html=True)
-        if st.button("⚡ AGREGAR CLÁSICO (Saltar)", type="primary", use_container_width=True):
-            st.session_state.cart.append({"prod": armar_nombre(pe["cat"], pe["nombre"]), "precio": pe["precio"], "notas": "Clásico", "pan": False, "cat": pe["cat"], "tiempo": "⚡ Ahora", "hora": "", "cant": 1})
-            st.session_state.prod_edit = None; st.rerun()
-            
-        c_p1, c_p2 = st.columns(2)
-        notas_extra, precio_final = [], pe["precio"]
-        
-        if pe["cat"] in ["Frappés", "Esquimos", "Bebidas Frías"]:
-            with c_p1:
-                leche = st.radio("Leche:", ["Entera", "Deslactosada", "Almendra (+$10)"], key="mod_leche")
-                if leche == "Almendra (+$10)": precio_final += 10; notas_extra.append("Almendra")
-                elif leche == "Deslactosada": notas_extra.append("Deslactosada")
-                chispas = st.radio("Chispas:", ["Con chispas", "Sin chispas"], key="mod_chispas")
-                if chispas == "Sin chispas": notas_extra.append("Sin chispas")
-            with c_p2:
-                if pe["cat"] == "Frappés":
-                    crema = st.radio("Crema Batida:", ["Con crema", "Sin crema"], key="mod_crema")
-                    if crema == "Sin crema": notas_extra.append("Sin crema")
-                adorno = st.selectbox("Vaso Adornado:", ["Sin Adorno", "Lechera", "Hershey's", "Caramelo"], key="mod_adorno")
-                if adorno != "Sin Adorno": notas_extra.append(f"Vaso: {adorno}")
-                
-        elif pe["cat"] == "Chamoyadas":
-            with c_p1: banderilla = st.radio("Banderilla:", ["Con banderilla", "Sin banderilla"], key="mod_band")
-            with c_p2: gomitas = st.radio("Gomitas:", ["Con gomitas", "Sin gomitas"], key="mod_gom")
-            perlas = st.radio("Perlas Explosivas:", ["Sin Perlas", "Con Perlas (+$10)"], key="mod_perl_cham")
-            if banderilla == "Sin banderilla": notas_extra.append("Sin banderilla")
-            if gomitas == "Sin gomitas": notas_extra.append("Sin gomitas")
-            if perlas == "Con Perlas (+$10)": precio_final += 10; notas_extra.append("Con Perlas Explosivas")
-            
-        elif pe["cat"] == "Refreshers":
-            perlas = st.radio("Extra:", ["Normal", "Perlas Explosivas (+$10)"], key="mod_perlas")
-            if perlas == "Perlas Explosivas (+$10)": precio_final += 10; notas_extra.append("Con Perlas Explosivas")
-                
-        st.write("")
-        if st.button(f"✅ AGREGAR PERSONALIZADO (${precio_final})", use_container_width=True):
-            st.session_state.cart.append({"prod": armar_nombre(pe["cat"], pe["nombre"]), "precio": precio_final, "notas": ", ".join(notas_extra), "pan": False, "cat": pe["cat"], "tiempo": "⚡ Ahora", "hora": "", "cant": 1})
-            st.session_state.prod_edit = None; st.rerun()
-            
-        if st.button("❌ Cancelar"): st.session_state.prod_edit = None; st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.stop() 
 
-    # CATEGORÍAS
-    st.markdown('<div class="sticky-header"><div class="cat-container">', unsafe_allow_html=True)
-    lista_cats = list(MENU.keys())
-    for fila_i in range(0, len(lista_cats), 3):
-        col_c = st.columns(3)
-        for idx_col, cat_n in enumerate(lista_cats[fila_i:fila_i+3]):
-            with col_c[idx_col]:
-                if st.button(cat_n, key=f"btn_cat_{cat_n}", use_container_width=True, type="primary" if st.session_state.cat_activa == cat_n else "secondary"):
-                    st.session_state.cat_activa = cat_n; st.rerun()
-    st.markdown('</div></div>', unsafe_allow_html=True)
-
-    # PRODUCTOS
-    st.markdown('<div class="prod-container">', unsafe_allow_html=True)
-    c_prod = st.columns(2)
-    for i, (n, p) in enumerate(MENU[st.session_state.cat_activa].items()):
-        stock, btn_txt, agotado = dict_inv.get(n, None), f"{n}\n${p}", False
-        if stock is not None: 
-            if stock <= 0: btn_txt += "\n(AGOTADO)"; agotado = True
-            else: btn_txt += f"\n(Quedan {stock})"
-            
-        with c_prod[i%2]:
-            if st.button(btn_txt, use_container_width=True, disabled=agotado, key=f"p_{st.session_state.cat_activa}_{n}"):
-                if st.session_state.cat_activa in ["Frappés", "Esquimos", "Chamoyadas", "Bebidas Frías", "Refreshers"]:
-                    st.session_state.prod_edit = {"nombre": n, "cat": st.session_state.cat_activa, "precio": p}
-                else:
-                    st.session_state.cart.append({"prod": armar_nombre(st.session_state.cat_activa, n), "precio": p, "notas": "", "pan": False, "cat": st.session_state.cat_activa, "tiempo": "⚡ Ahora", "hora": "", "cant": 1})
+def history_screen(store, s, user, users):
+    st.header("🧾 Pedidos e historial")
+    search = st.text_input("Buscar folio, cliente o producto", key="order_search")
+    active_only = st.checkbox("Solo pedidos sin terminar", value=True)
+    matches = []
+    for o in sorted(s["orders"].values(), key=lambda x: x["at"], reverse=True):
+        if active_only and not any(x["status"] not in {"Entregado", "Cancelado"} for x in o["lines"]):
+            continue
+        if sort_key(search) not in sort_key(o["folio"] + " " + o["customer"]["name"] + " " + " ".join(x["name"] for x in o["lines"])):
+            continue
+        matches.append(o)
+    st.caption(f"{len(matches)} pedidos encontrados. Se muestran hasta 50; usa el buscador para localizar uno anterior.")
+    for order in matches[:50]:
+        with st.expander(order["folio"] + " · " + order["customer"]["name"] + " · " + money(order["total"])):
+            order_heading(order)
+            for line in order["lines"]:
+                st.write(f"{line['qty']} × {line['name']} · {line['status']} · {money(line['qty'] * line['unit'])}")
+                if line["notes"]:
+                    st.write(line["notes"])
+                if user["role"] == "admin" and line["status"] != "Cancelado" and not order.get("legacy"):
+                    with st.expander("Cancelar: " + line["name"]):
+                        with st.form("cancel_" + line["id"]):
+                            reason = st.text_input("Motivo")
+                            restock = st.checkbox("La mercancía está intacta y regresa a existencias", value=False)
+                            st.caption("Se cancela todo este renglón. El importe reduce la cuenta; si ya pagó, queda saldo a favor y puedes devolverlo desde Cobrar.")
+                            if st.form_submit_button("Confirmar cancelación"):
+                                send(store, user, users, "cancel_line", dict(order=order["id"], line=line["id"], expected=line["status"], reason=reason, restock=restock))
+            if st.button("Ver / reimprimir ticket", key="ht_" + order["id"], width="stretch"):
+                st.session_state.ticket = dict(order=order["id"], type="venta")
                 st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
-    with st.expander("Añadir Cargo Extra Manual"):
-        c_mot, c_mon = st.columns([3,1])
-        with c_mot: mot = st.text_input("Concepto (Extra):")
-        with c_mon: mon = st.number_input("$", step=5.0)
-        if st.button("Aplicar Extra", use_container_width=True) and mot:
-            st.session_state.cart.append({"prod": f"Extra: {mot}", "precio": mon, "notas": "", "pan": False, "cat": "Extra", "tiempo": "⚡ Ahora", "hora": "", "cant": 1}); st.rerun()
 
-    # RESUMEN Y COBRO
-    if st.session_state.cart:
-        st.divider()
-        st.subheader("🧾 Ticket de Compra")
-        total = 0
-        for idx, item in enumerate(st.session_state.cart):
-            st.markdown(f"**▪ {item['prod']} (${item['precio']})**")
-            c1, c2, c3 = st.columns([1.5, 1, 1])
-            with c1: 
-                if "Chilaquiles" in item['prod']:
-                    cs1, cs2 = st.columns(2)
-                    with cs1: item['salsa'] = st.selectbox("Salsa", ["Verdes", "Rojos"], key=f"salsa_{idx}", label_visibility="collapsed")
-                    with cs2: item['pan'] = st.checkbox("Con Telera", key=f"cpan_{idx}")
-                else: item['notas'] = st.text_input("Notas", value=item['notas'], key=f"cn_{idx}", label_visibility="collapsed", placeholder="Notas")
-            with c2: item['tiempo'] = st.radio("Horario", ["⚡ Ahora", "🕒 Prog."], index=0 if item.get('tiempo', "⚡ Ahora") == "⚡ Ahora" else 1, horizontal=True, key=f"tr_{idx}", label_visibility="collapsed")
-            with c3:
-                if item['tiempo'] == "🕒 Prog.": item['hora'] = st.time_input("Hora", key=f"th_{idx}", label_visibility="collapsed").strftime("%H:%M")
-                else: item['hora'] = "Ahora"
-                    
-            if item.get('cat') == "Platillos": 
-                item['dest'] = "Cocina"
-                st.markdown("<p style='color:#D93025; font-size:14px; margin:0;'>👨‍🍳 Va a cocina directo</p>", unsafe_allow_html=True)
-            else: item['dest'] = "Cocina" if st.checkbox("Mandar a Cocina", value=False, key=f"cd_{idx}") else "Entrega Directa"
-            total += item['precio']; st.write("---")
-            
-        st.write(f"### Total a Cobrar: ${total}")
-        c_cli, c_pago = st.columns([2, 1])
-        with c_cli:
-            opc = st.selectbox("Buscar cliente:", [""] + clientes_unicos)
-            cliente = st.text_input("Nombre / Referencia:", value=opc, placeholder="Escriba aquí...")
-        with c_pago: pago = st.radio("Estado de Pago:", ["Pagado", "Pendiente"], index=0, horizontal=True)
+def main():
+    st.set_page_config(page_title="Faro Café · Caja y pedidos", page_icon="☕", layout="centered", initial_sidebar_state="collapsed")
+    st.markdown(CSS, unsafe_allow_html=True)
+    try:
+        users = credentials_config()
+        store = get_store()
+    except RuleError as exc:
+        st.error(str(exc))
+        st.info("Consulta LEEME.md y secrets_ejemplo.toml. Las credenciales van en Streamlit → Settings → Secrets, nunca en GitHub.")
+        st.stop()
+    except Exception as exc:
+        logging.error("Faro configuración: %s", type(exc).__name__)
+        st.error("No se pudo conectar. Revisa Secrets, permisos de la cuenta de servicio y el nombre Base_POS o spreadsheet_id.")
+        st.stop()
+    if os.environ.get("FARO_DEMO") == "1":
+        st.warning("DEMOSTRACIÓN · Los datos están en memoria y se pierden al reiniciar. Usuario demo / clave solo-demo.")
+    user = login(store, users)
+    pending_action(store, user, users)
+    s = safe_state(store)
+    with st.sidebar:
+        st.write("**" + user["name"] + "** · " + user["role"])
+        st.caption("Cada persona debe usar su propia cuenta.")
+        if st.button("Salir de mi cuenta", width="stretch"):
+            if st.session_state.get("cart"):
+                st.warning("Vacía o guarda el pedido antes de salir.")
+            else:
+                st.session_state.clear()
+                st.rerun()
+    if not s["initialized"]:
+        setup_screen(store, user, users)
+    st.title("☕ Faro Café")
+    st.caption(user["name"] + " · " + now().strftime("%d/%m/%Y"))
+    if st.session_state.get("notice"):
+        st.success(st.session_state.pop("notice"))
+    if st.session_state.get("change_notice"):
+        st.success("Cambio a entregar: " + st.session_state.pop("change_notice"))
+    if st.session_state.get("nav_next"):
+        st.session_state.nav = st.session_state.pop("nav_next")
+    nav = st.radio("Sección", ["Vender", "Cocina", "Entregas", "Cobrar", "Más"], horizontal=True, key="nav", label_visibility="collapsed")
+    if st.button("↻ Actualizar datos", width="stretch"):
+        store.cached = None
+        st.rerun()
+    ticket_screen(store, s, user, users)
+    if nav == "Vender":
+        sale_screen(store, s, user, users)
+    elif nav == "Cocina":
+        kitchen_screen(store, user, users)
+    elif nav == "Entregas":
+        deliveries_screen(store, user, users)
+    elif nav == "Cobrar":
+        payment_screen(store, s, user, users)
+    else:
+        options = ["Mi caja", "Inventario", "Pedidos"]
+        if user["role"] == "admin":
+            options += ["Resumen y cortes", "Catálogo"]
+        page = st.selectbox("Abrir", options, key="more_page")
+        {"Mi caja": cash_screen, "Inventario": inventory_screen, "Pedidos": history_screen,
+         "Resumen y cortes": reports_screen, "Catálogo": catalog_screen}[page](store, s, user, users)
 
-        if st.button("❌ Descartar Orden", use_container_width=True): st.session_state.cart = []; st.rerun()
-        
-        c_e1, c_e2 = st.columns(2)
-        with c_e1:
-            if st.button("🚀 GUARDAR Y ENVIAR", type="primary", use_container_width=True):
-                if not cliente.strip() and pago == "Pendiente" and not st.session_state.admin_mode: st.warning("Nombre obligatorio para deuda.")
-                else:
-                    nom_final = cliente.strip() if cliente.strip() else "Mostrador"
-                    panes = sum(1 for i in st.session_state.cart if "telera" in i['prod'].lower() or i.get('pan', False))
-                    for i in st.session_state.cart:
-                        t_est = "Preparando" if i['dest'] == "Cocina" else "Entregado"
-                        t_bd = "Inmediato" if i['tiempo'] == "⚡ Ahora" else "Definir Hora"
-                        h_bd = datetime.now(zona_mx).strftime("%H:%M") if t_bd == "Inmediato" else i['hora']
-                        notas_final = i.get('notas', '')
-                        if "Chilaquiles" in i['prod']: notas_final = f"Salsa: {i.get('salsa', 'Verdes')} | Pan: {'Sí (Telera)' if i.get('pan') else 'No'} | " + notas_final
-                        sh.worksheet("Operaciones").append_row([nom_final, i['prod'], i['dest'], notas_final, t_bd, h_bd, t_est, total if i == st.session_state.cart[0] else 0, hoy_str, st.session_state.cajero])
-                    if pago == "Pendiente": sh.worksheet("Deudas").append_row([nom_final, "Deuda", total, ", ".join([i['prod'] for i in st.session_state.cart]), hoy_str])
-                    if len(inv) > 1:
-                        for idx, row in enumerate(inv[1:], start=2):
-                            p_nom = row[0]
-                            try: p_stock = int(row[1])
-                            except: p_stock = 0
-                            comprados = sum(1 for p in st.session_state.cart if p_nom in p['prod'])
-                            if comprados > 0: sh.worksheet("Inventario").update_cell(idx, 2, p_stock - comprados)
-                            if p_nom == "Telera" and panes > 0: sh.worksheet("Inventario").update_cell(idx, 2, p_stock - panes)
-                    st.session_state.cart = []; leer.clear(); st.success("¡Registrado!"); st.rerun()
-        
-        with c_e2:
-            if st.button("🖨️ GUARDAR E IMPRIMIR", type="primary", use_container_width=True):
-                if not cliente.strip() and pago == "Pendiente" and not st.session_state.admin_mode: st.warning("Nombre obligatorio para deuda.")
-                else:
-                    nom_final = cliente.strip() if cliente.strip() else "Mostrador"
-                    panes = sum(1 for i in st.session_state.cart if "telera" in i['prod'].lower() or i.get('pan', False))
-                    ticket_items = []
-                    for i in st.session_state.cart:
-                        t_est = "Preparando" if i['dest'] == "Cocina" else "Entregado"
-                        t_bd = "Inmediato" if i['tiempo'] == "⚡ Ahora" else "Definir Hora"
-                        h_bd = datetime.now(zona_mx).strftime("%H:%M") if t_bd == "Inmediato" else i['hora']
-                        notas_final = i.get('notas', '')
-                        if "Chilaquiles" in i['prod']: notas_final = f"Salsa: {i.get('salsa', 'Verdes')} | Pan: {'Sí (Telera)' if i.get('pan') else 'No'} | " + notas_final
-                        sh.worksheet("Operaciones").append_row([nom_final, i['prod'], i['dest'], notas_final, t_bd, h_bd, t_est, total if i == st.session_state.cart[0] else 0, hoy_str, st.session_state.cajero])
-                        ticket_items.append({"prod": i['prod'], "cant": 1, "notas": notas_final, "tiempo": i['tiempo'], "hora": h_bd})
-                    
-                    if pago == "Pendiente": sh.worksheet("Deudas").append_row([nom_final, "Deuda", total, ", ".join([i['prod'] for i in st.session_state.cart]), hoy_str])
-                    if len(inv) > 1:
-                        for idx, row in enumerate(inv[1:], start=2):
-                            p_nom = row[0]
-                            try: p_stock = int(row[1])
-                            except: p_stock = 0
-                            comprados = sum(1 for p in st.session_state.cart if p_nom in p['prod'])
-                            if comprados > 0: sh.worksheet("Inventario").update_cell(idx, 2, p_stock - comprados)
-                            if p_nom == "Telera" and panes > 0: sh.worksheet("Inventario").update_cell(idx, 2, p_stock - panes)
-                    
-                    # Generar Ticket para RawBT
-                    st.session_state.ticket_imprimir = generar_texto_ticket(nom_final, pago, ticket_items, total, "venta")
-                    st.session_state.cart = []; leer.clear(); st.rerun()
 
-# ==========================================
-# PESTAÑA 2: CAJA RÁPIDA
-# ==========================================
-with tabs[1]:
-    st.header("⚡ Caja Rápida")
-    categorias_puesto = [c for c in MENU.keys() if any(x in c for x in ["Café", "Frappés", "Bebidas", "Esquimos", "Chamoyadas", "Refreshers"])]
-    if st.session_state.cat_puesto_activa not in categorias_puesto and categorias_puesto: st.session_state.cat_puesto_activa = categorias_puesto[0]
-
-    if categorias_puesto:
-        st.markdown('<div class="cat-container">', unsafe_allow_html=True)
-        cols_p_cat = st.columns(3)
-        for idx_cp, cat_p_nom in enumerate(categorias_puesto):
-            with cols_p_cat[idx_cp % 3]:
-                if st.button(cat_p_nom, key=f"btn_cp_{cat_p_nom}", use_container_width=True, type="primary" if st.session_state.cat_puesto_activa == cat_p_nom else "secondary"):
-                    st.session_state.cat_puesto_activa = cat_p_nom; st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="prod-container">', unsafe_allow_html=True)
-        cat_p = st.session_state.cat_puesto_activa
-        cols_p = st.columns(2)
-        for i, (n, p) in enumerate(MENU[cat_p].items()):
-            with cols_p[i%2]:
-                if st.button(f"{n}\n${p}", use_container_width=True, key=f"puesto_{cat_p}_{n}"):
-                    st.session_state.puesto_cart.append({"prod": armar_nombre(cat_p, n), "precio": p, "notas": "", "cant": 1}); st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-                    
-        if st.session_state.puesto_cart:
-            st.divider()
-            total_p = 0
-            for idx, item in enumerate(st.session_state.puesto_cart):
-                c1, c2, c3 = st.columns([3, 1, 2])
-                with c1: st.write(f"▪ {item['prod']}")
-                with c2: st.write(f"${item['precio']}")
-                with c3: item['notas'] = st.text_input("Notas", key=f"pn_{idx}", label_visibility="collapsed")
-                total_p += item['precio']
-                
-            st.write(f"### Total Rápido: ${total_p}")
-            c_nom_p, c_pag_p = st.columns([1.5, 1])
-            with c_nom_p: cliente_p = st.text_input("Nombre cliente:", placeholder="Para llevar...")
-            with c_pag_p: pago_p = st.radio("Cobro:", ["Pagado", "Pendiente"], index=0, horizontal=True, key="pag_p")
-            
-            c_bp, c_ep1, c_ep2 = st.columns([1, 1, 1])
-            with c_bp:
-                if st.button("❌ Descartar", key="b_puesto", use_container_width=True): st.session_state.puesto_cart = []; st.rerun()
-            with c_ep1:
-                if st.button("🚀 GUARDAR", type="primary", use_container_width=True):
-                    nom_final_p = cliente_p.strip() if cliente_p.strip() else "Mostrador"
-                    for i in st.session_state.puesto_cart:
-                        sh.worksheet("Operaciones").append_row([nom_final_p, i['prod'], "Entrega Directa", i['notas'], "Inmediato", datetime.now(zona_mx).strftime("%H:%M"), "Entregado", total_p if i == st.session_state.puesto_cart[0] else 0, hoy_str, st.session_state.cajero])
-                    if pago_p == "Pendiente": sh.worksheet("Deudas").append_row([nom_final_p, "Deuda", total_p, ", ".join([i['prod'] for i in st.session_state.puesto_cart]), hoy_str])
-                    st.session_state.puesto_cart = []; leer.clear(); st.rerun()
-            with c_ep2:
-                if st.button("🖨️ IMPRIMIR", type="primary", use_container_width=True):
-                    nom_final_p = cliente_p.strip() if cliente_p.strip() else "Mostrador"
-                    for i in st.session_state.puesto_cart:
-                        sh.worksheet("Operaciones").append_row([nom_final_p, i['prod'], "Entrega Directa", i['notas'], "Inmediato", datetime.now(zona_mx).strftime("%H:%M"), "Entregado", total_p if i == st.session_state.puesto_cart[0] else 0, hoy_str, st.session_state.cajero])
-                    if pago_p == "Pendiente": sh.worksheet("Deudas").append_row([nom_final_p, "Deuda", total_p, ", ".join([i['prod'] for i in st.session_state.puesto_cart]), hoy_str])
-                    st.session_state.ticket_imprimir = generar_texto_ticket(nom_final_p, pago_p, st.session_state.puesto_cart, total_p, "venta")
-                    st.session_state.puesto_cart = []; leer.clear(); st.rerun()
-
-# ==========================================
-# PESTAÑA 3: COCINA 
-# ==========================================
-with tabs[2]:
-    st.header("👨‍🍳 Monitor de Producción")
-    st.markdown("""<audio autoplay="true"><source src="https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3" type="audio/mpeg"></audio>""", unsafe_allow_html=True)
-    
-    if len(ops) > 1:
-        pedidos_cocina = [ (i, f) for i, f in enumerate(ops[1:], start=2) if len(f) > 8 and f[8] == hoy_str and f[6] == "Preparando" and f[2] == "Cocina" ]
-        pedidos_cocina.sort(key=lambda x: (x[1][4] != "Inmediato", x[1][5])) 
-        
-        if pedidos_cocina:
-            # BOTÓN DE IMPRIMIR COCINA (Con exclusión de los que ya se imprimieron)
-            if st.button("🖨️ IMPRIMIR COMANDAS NUEVAS EN LA ZEBRA", type="primary", use_container_width=True):
-                items_cocina = []
-                actualizaciones_hoja = []
-                for i_fila, f_data in pedidos_cocina:
-                    # Si no tiene la marca invisible [IMP], lo manda imprimir
-                    if "[IMP]" not in f_data[3]:
-                        items_cocina.append({"prod": f_data[1], "cant": 1, "notas": f_data[3].replace(" [IMP]", "").replace("[IMP]", ""), "tiempo": ("🕒 Prog." if f_data[4]!="Inmediato" else "⚡ Ahora"), "hora": f_data[5]})
-                        nuevo_txt_notas = f_data[3] + " [IMP]" if f_data[3] else "[IMP]"
-                        actualizaciones_hoja.append({"row": i_fila, "val": nuevo_txt_notas})
-                
-                if items_cocina:
-                    ws_ops = sh.worksheet("Operaciones")
-                    for u in actualizaciones_hoja: ws_ops.update_cell(u["row"], 4, u["val"])
-                    st.session_state.ticket_imprimir = generar_texto_ticket("COCINA", "N/A", items_cocina, 0, "cocina")
-                    st.cache_data.clear(); st.rerun()
-                else:
-                    st.info("⚠️ Todas las comandas actuales ya fueron impresas previamente.")
-                
-            for i, f in pedidos_cocina:
-                urgente = False
-                if f[4] == "Inmediato": urgente = True
-                else:
-                    try: 
-                        dt_pedido = datetime.combine(hoy_obj, datetime.strptime(f[5], "%H:%M").time()).replace(tzinfo=zona_mx)
-                        if (dt_pedido - datetime.now(zona_mx)) <= timedelta(minutes=15): urgente = True
-                    except: pass
-                    
-                css_clase = "card-urgente" if urgente else "card-programado"
-                notas_limpias = f[3].replace(" [IMP]", "").replace("[IMP]", "")
-                
-                st.markdown(f'<div class="card {css_clase}">', unsafe_allow_html=True)
-                if urgente: st.markdown("<h2 style='color:#D93025; font-weight:900;'>🔥 ENTREGAR AHORA (INMEDIATO)</h2>", unsafe_allow_html=True)
-                else: st.markdown(f"<h2 style='color:#005A9E; font-weight:800;'>🕒 PREPARAR PARA: {f[5]} HRS</h2>", unsafe_allow_html=True)
-                    
-                st.markdown(f"<h3>{f[1]}</h3><p><b>Cliente:</b> {f[0]}</p><p style='font-size:22px; font-weight:bold;'>Extras/Notas: <span style='color:#D93025;'><i>{notas_limpias}</i></span></p>", unsafe_allow_html=True)
-                
-                c_listo, c_canc = st.columns([3,1])
-                with c_listo:
-                    if st.button(f"✅ MARCAR COMO LISTO", key=f"l_{i}", use_container_width=True, type="primary"):
-                        sh.worksheet("Operaciones").update_cell(i, 7, "Listo"); leer.clear(); st.rerun()
-                with c_canc:
-                    if st.session_state.admin_mode:
-                        if st.button("🗑️ Cancelar", key=f"fc_{i}", use_container_width=True):
-                            sh.worksheet("Operaciones").delete_rows(i); leer.clear(); st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("Cocina despejada.")
-
-# ==========================================
-# PESTAÑA 4: ENTREGAS
-# ==========================================
-with tabs[3]:
-    st.header("🚚 Entregas Pendientes")
-    hay_listos = False
-    if len(ops) > 1:
-        for i, f in enumerate(ops[1:], start=2):
-            if len(f) > 8 and f[8] == hoy_str and f[6] == "Listo":
-                hay_listos = True
-                st.success(f"**{f[1]}** | Para: {f[0]} | Notas: {f[3].replace(' [IMP]', '').replace('[IMP]', '')}")
-                if st.button("🚀 Entregado al cliente", key=f"ent_{i}", type="primary"):
-                    sh.worksheet("Operaciones").update_cell(i, 7, "Entregado"); leer.clear(); st.rerun()
-    if not hay_listos: st.write("No hay órdenes esperando.")
-
-# ==========================================
-# PESTAÑA 5: AGENDADOS (FORMULARIO Y SECCIONES)
-# ==========================================
-with tabs[4]:
-    st.header("📅 Agenda de Órdenes")
-    
-    with st.expander("📝 Registrar Nueva Orden Futura"):
-        with st.form("form_agenda"):
-            a_cli = st.text_input("Cliente:")
-            a_prod = st.selectbox("Producto:", LISTA_NOMBRES_PRODUCTOS)
-            a_cant = st.number_input("Cantidad:", min_value=1, value=1)
-            c_fd, c_fh = st.columns(2)
-            with c_fd: a_fecha = st.date_input("Día de Entrega:", min_value=hoy_obj)
-            with c_fh: a_hora = st.time_input("Hora de Entrega:")
-            
-            c_nd, c_cp = st.columns(2)
-            with c_nd: a_notas = st.text_input("Notas Especiales:")
-            with c_cp: a_dest = st.selectbox("Preparar en:", ["Cocina", "Entrega Directa"], index=0 if TODOS_LOS_PRODUCTOS[a_prod]["cat"] == "Platillos" else 1)
-            
-            a_pago = st.radio("Cobro:", ["Pagado", "Pendiente"], horizontal=True)
-            
-            if st.form_submit_button("Agendar Pedido", type="primary"):
-                if not a_cli.strip() and a_pago == "Pendiente": st.warning("Falta nombre.")
-                else:
-                    n_f = a_cli.strip() if a_cli.strip() else "Mostrador"
-                    f_str = a_fecha.strftime("%d/%m/%Y")
-                    h_str = a_hora.strftime("%H:%M")
-                    tot_a = TODOS_LOS_PRODUCTOS[a_prod]["precio"] * a_cant
-                    
-                    for _ in range(a_cant):
-                        est_a = "Pendiente" if a_fecha > hoy_obj else ("Preparando" if a_dest == "Cocina" else "Listo")
-                        sh.worksheet("Operaciones").append_row([n_f, armar_nombre(TODOS_LOS_PRODUCTOS[a_prod]["cat"], a_prod), a_dest, a_notas, "Definir Hora", h_str, est_a, tot_a if _ == 0 else 0, f_str, st.session_state.cajero])
-                    
-                    if a_pago == "Pendiente": sh.worksheet("Deudas").append_row([n_f, "Deuda", tot_a, f"{a_cant}x {a_prod}", hoy_str])
-                    leer.clear(); st.success("¡Agendado exitosamente!"); st.rerun()
-
-    st.divider()
-    hoy_list, manana_list, futuro_list = [], [], []
-    
-    if len(ops) > 1:
-        for i, f in enumerate(ops[1:], start=2):
-            if len(f) > 8 and f[6] == "Pendiente":
-                try: fp = datetime.strptime(f[8], "%d/%m/%Y").date()
-                except: fp = hoy_obj 
-                
-                if fp == hoy_obj: hoy_list.append((i, f))
-                elif fp == hoy_obj + timedelta(days=1): manana_list.append((i, f))
-                elif fp > hoy_obj + timedelta(days=1): futuro_list.append((i, f))
-                
-        def mostrar_agendados(lista, titulo):
-            if lista:
-                st.markdown(f"### {titulo}")
-                for i, f in lista:
-                    st.info(f"**{f[1]}** | Fecha: {f[8]} | Hora: {f[5]} | Cliente: {f[0]}")
-                    if st.session_state.admin_mode:
-                        with st.expander(f"Modificar {f[1]} (Admin)"):
-                            n_cli = st.text_input("Cliente", value=f[0], key=f"ac_{i}")
-                            n_fec = st.text_input("Fecha (DD/MM/YYYY)", value=f[8], key=f"af_{i}")
-                            if st.button("Guardar Cambios", key=f"ag_{i}"):
-                                sh.worksheet("Operaciones").update_cell(i, 1, n_cli); sh.worksheet("Operaciones").update_cell(i, 9, n_fec); leer.clear(); st.rerun()
-                            if st.button("Eliminar Registro", key=f"ab_{i}"):
-                                sh.worksheet("Operaciones").delete_rows(i); leer.clear(); st.rerun()
-
-        mostrar_agendados(hoy_list, "🔥 Para Hoy (Pendientes de pasar a cocina)")
-        mostrar_agendados(manana_list, "⏳ Para Mañana")
-        mostrar_agendados(futuro_list, "📅 Futuros")
-
-# ==========================================
-# PESTAÑA 6: PAGOS CON HISTORIAL LIMPIO
-# ==========================================
-with tabs[5]:
-    st.header("💳 Control de Crédito")
-    if len(deu) > 1:
-        lista_nombres = sorted(list(set(f[0] for f in deu[1:] if len(f) > 0 and f[0] != "")))
-        busqueda = st.selectbox("Buscar Cliente:", ["Todos los saldos"] + lista_nombres)
-        
-        c_res = {}
-        for i, f in enumerate(deu[1:], start=2):
-            if len(f) >= 3:
-                c, tipo = f[0], f[1]
-                try: m = float(f[2])
-                except: m = 0.0
-                if c not in c_res: c_res[c] = {"tot": 0, "hist": []}
-                if tipo == "Deuda": c_res[c]["tot"] += m
-                else: c_res[c]["tot"] -= m
-                c_res[c]["hist"].append({"idx": i, "data": f})
-            
-        for c, info in c_res.items():
-            if (busqueda == "Todos los saldos" or c == busqueda) and round(info["tot"], 2) > 0:
-                with st.expander(f"{c} - Saldo Pendiente: ${round(info['tot'], 2)}", expanded=(busqueda!="Todos los saldos")):
-                    
-                    last_abono_idx = 0
-                    for idx_h, h in enumerate(info["hist"]):
-                        if h["data"][1] == "Abono": last_abono_idx = idx_h
-                    hist_mostrar = info["hist"][last_abono_idx:]
-                    
-                    for h in hist_mostrar:
-                        fila, det = h["data"], h["data"][3] if len(h["data"])>3 else ""
-                        try: fec_corta = datetime.strptime(fila[4], "%d/%m/%Y").strftime("%d/%m") if len(fila)>4 else ""
-                        except: fec_corta = ""
-                        st.write(f"{'[-] Cargo' if fila[1]=='Deuda' else '[+] Abono'} **${fila[2]}** ({fec_corta}) - *{det}*")
-                    
-                    st.divider()
-                    c_ab, c_btn = st.columns(2)
-                    with c_ab: abono = st.number_input(f"Abonar:", min_value=0.0, max_value=float(info['tot']), value=float(info['tot']), key=f"n_{c}")
-                    with c_btn:
-                        if st.button("Registrar Pago", key=f"p_{c}", type="primary", use_container_width=True):
-                            sh.worksheet("Deudas").append_row([c, "Abono", abono, "Pago", hoy_str]); leer.clear(); st.rerun()
-
-# ==========================================
-# PESTAÑA 7: INVENTARIO Y PRECIOS
-# ==========================================
-with tabs[6]:
-    st.header("📦 Inventario y Precios")
-    with st.expander("💲 MODIFICAR PRECIOS DEL MENÚ (En la Nube)", expanded=True):
-        cp_sel, cp_val = st.columns([2, 1])
-        with cp_sel: prod_ed = st.selectbox("Producto:", LISTA_NOMBRES_PRODUCTOS, key="edit_p_sel")
-        with cp_val: n_pre = st.number_input("Precio ($):", value=float(TODOS_LOS_PRODUCTOS[prod_ed]["precio"]), step=1.0, key="edit_p_val")
-
-        if st.button("💾 Guardar Precio", type="primary", use_container_width=True):
-            try:
-                if prod_ed in fila_producto_map: sh.worksheet("Inventario").update_cell(fila_producto_map[prod_ed], 4, n_pre)
-                else: sh.worksheet("Inventario").append_row([prod_ed, "", TODOS_LOS_PRODUCTOS[prod_ed]["cat"], n_pre, "Activo"])
-                leer.clear(); st.success(f"¡Actualizado a ${n_pre}!"); st.rerun()
-            except: st.error("Error al guardar.")
-
-    st.divider()
-    with st.expander("Alta de Nuevo Producto"):
-        with st.form("add_inv"):
-            n_p = st.text_input("Nombre:")
-            n_c = st.selectbox("Categoría:", list(MENU_BASE.keys()))
-            n_pr = st.number_input("Precio ($):", step=5.0)
-            n_s = st.number_input("Stock Inicial:", min_value=0, value=10) if "Tortas" in n_c else ""
-            if st.form_submit_button("Guardar"):
-                if n_p.strip(): sh.worksheet("Inventario").append_row([n_p, n_s, n_c, n_pr, "Activo"]); leer.clear(); st.rerun()
-                else: st.warning("Falta nombre.")
-
-    st.divider()
-    if len(inv) > 1:
-        with st.form("inv_form"):
-            st.write("Conteo físico (Productos controlados):")
-            cols, nv, ctd = st.columns(4), {}, 0
-            for i, f in enumerate(inv[1:], start=2):
-                if len(f) >= 5 and (f[4].strip().lower() if len(f)>4 else "activo") == "activo" and "Tortas" in f[2]:
-                    try: val = int(f[1])
-                    except: val = 0
-                    with cols[ctd % 4]: nv[i] = st.number_input(f[0], value=val, min_value=0, key=f"ui_inv_{i}")
-                    ctd += 1
-            if ctd == 0: st.info("No hay productos con límite.")
-            if st.form_submit_button("Actualizar Conteos"):
-                for i, v in nv.items(): sh.worksheet("Inventario").update_cell(i, 2, v)
-                leer.clear(); st.rerun()
-
-# ==========================================
-# PESTAÑA 8: MODO ADMIN
-# ==========================================
-if st.session_state.admin_mode:
-    with tabs[7]:
-        st.header("⚙️ Admin")
-        cortes = [{"Fecha": r[0], "Ingreso": float(r[2].split("$")[1].replace(",", "").strip())} for r in hist if len(r)>2 and ("Corte" in r[1] or "Cierre" in r[1])] if len(hist)>1 else []
-        if cortes: st.bar_chart(pd.DataFrame(cortes[-6:]).set_index("Fecha"))
-        else: st.info("No hay cortes.")
-            
-        st.divider()
-        if st.button("EJECUTAR CORTE DE CAJA HOY", type="primary"):
-            try:
-                f_man, v_hoy, tkts = [ops[0]], 0, 0
-                for f in ops[1:]:
-                    if len(f) > 8 and f[8] == hoy_str and f[6] == "Entregado":
-                        try: v_hoy += float(f[7])
-                        except: pass
-                        tkts += 1
-                    else: f_man.append(f)
-                if tkts > 0:
-                    sh.worksheet("Historial").append_row([hoy_str, "Cierre Diario", f"Ingreso Total: ${v_hoy}", f"Transacciones: {tkts}"])
-                    sh.worksheet("Operaciones").clear(); sh.worksheet("Operaciones").update("A1", f_man)
-                    leer.clear(); st.success(f"Corte procesado: ${v_hoy}"); st.rerun()
-                else: st.info("Sin operaciones para cierre.")
-            except Exception as e: st.error(f"Falla: {e}")
-                
-        st.divider()
-        if len(ops) > 0:
-            edited_df = st.data_editor(pd.DataFrame(ops[1:], columns=ops[0]), num_rows="dynamic", use_container_width=True)
-            if st.button("Forzar Sincronización DB"):
-                sh.worksheet("Operaciones").clear(); sh.worksheet("Operaciones").update("A1", [edited_df.fillna("").columns.values.tolist()] + edited_df.fillna("").values.tolist())
-                leer.clear(); st.rerun()
-
-# ==========================================
-# PESTAÑA 9: GASTOS
-# ==========================================
-if st.session_state.admin_mode:
-    with tabs[8]:
-        st.header("💸 Gastos")
-        with st.form("form_gastos"):
-            g_conc = st.text_input("Concepto:")
-            cc, cu, cp = st.columns(3)
-            with cc: g_cant = st.number_input("Cantidad:", min_value=0.0, step=0.5, value=1.0)
-            with cu: g_uni = st.selectbox("Unidad:", ["Pieza(s)", "Kg", "Litro(s)", "Paquete(s)"])
-            with cp: g_precio = st.number_input("Precio Uni ($):", min_value=0.0, step=10.0, value=0.0)
-            tot_g = g_cant * g_precio
-            if st.form_submit_button("Registrar Gasto"):
-                if g_conc.strip() and tot_g > 0:
-                    try: sh.worksheet("Gastos").append_row([hoy_str, g_conc, g_cant, g_uni, g_precio, tot_g, semana_str]); leer.clear(); st.rerun()
-                    except: st.error("Falta pestaña 'Gastos'.")
-                else: st.warning("Datos inválidos.")
-                    
-        g_val = [f[:7] for f in gas if len(f)>=7 and f[0]!="Fecha"]
-        if g_val:
-            df_g = pd.DataFrame(g_val, columns=["Fecha", "Concepto", "Cantidad", "Unidad", "Precio_Unitario", "Total", "Semana"])
-            df_g['Total'] = pd.to_numeric(df_g['Total'], errors='coerce').fillna(0)
-            for sem in reversed(df_g['Semana'].unique()): 
-                df_s = df_g[df_g['Semana'] == sem]
-                with st.expander(f"Semana: {sem} --- Total: ${df_s['Total'].sum()}"):
-                    for _, r in df_s.iterrows(): st.write(f"- {r['Fecha']}: **{r['Concepto']}** ({r['Cantidad']} {r['Unidad']}) ➔ **${r['Total']}**")
+if __name__ == "__main__":
+    main()
