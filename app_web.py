@@ -227,6 +227,8 @@ def apply_event(s, event):
         if p["paid"]:
             payment = dict(customer=p["customer"]["id"], amount=p["paid"], method=p["method"],
                            at=event["at"], actor=actor, id=event["id"], order=p["id"])
+            if payment["method"] == "Efectivo" and "received" in p:
+                payment.update(received=p.get("received", p["paid"]), change=p.get("received", p["paid"]) - p["paid"])
             s["payments"].append(payment)
             add_balance(s, payment["customer"], -payment["amount"], event, "Cobro " + order["folio"])
             if payment["method"] == "Efectivo":
@@ -235,7 +237,10 @@ def apply_event(s, event):
         sign = 1 if kind == "refund" else -1
         add_balance(s, p["customer"], sign * p["amount"], event,
                     "Devolución al cliente" if sign == 1 else "Abono · " + p["method"])
-        s["payments"].append(dict(**p, at=event["at"], actor=actor, id=event["id"], refund=sign == 1))
+        payment = dict(**p, at=event["at"], actor=actor, id=event["id"], refund=sign == 1)
+        if kind == "payment" and p["method"] == "Efectivo" and "received" in p:
+            payment.update(received=p.get("received", p["amount"]), change=p.get("received", p["amount"]) - p["amount"])
+        s["payments"].append(payment)
         if p["method"] == "Efectivo":
             add_cash(s, event, actor, -sign * p["amount"], "Devolución" if sign == 1 else "Abono")
     elif kind == "line_state":
@@ -273,8 +278,9 @@ def apply_event(s, event):
             for asset, qty in p["items"].items():
                 add_stock(s, p["location"], asset, -qty if kind == "stock_loss" else qty)
     elif kind == "opening":
-        s["openings"][(date, actor)] = p["amount"]
-        add_cash(s, event, actor, p["amount"], "Fondo inicial")
+        owner = "__puesto__" if p.get("shared") else actor
+        s["openings"][(date, owner)] = p["amount"]
+        add_cash(s, event, owner, p["amount"], "Fondo inicial · registrado por " + actor)
     elif kind in {"expense", "withdraw"}:
         if p["method"] == "Efectivo":
             add_cash(s, event, actor, -p["amount"], p["reason"])
@@ -316,12 +322,25 @@ def available(s, location, asset):
 
 
 def cash_total(s, owner, date):
-    return sum(x["amount"] for x in s["cash"] if x["owner"] == owner and x["date"] == date)
+    return sum(x["amount"] for x in s["cash"] if (owner == "__puesto__" or x["owner"] == owner) and x["date"] == date)
+
+
+def cash_owner(s, actor):
+    return "__puesto__" if s.get("schema", 2) >= 3 else actor
+
+
+def opening_total(s, date):
+    return sum(amount for (d, _), amount in s["openings"].items() if d == date)
+
+
+def operating_cash(s, actor, date):
+    return cash_total(s, cash_owner(s, actor), date)
 
 
 def cash_ready(s, actor, date):
-    require(s.get("schema", 2) >= 3 or (date, actor) in s["openings"], "Primero registra tu fondo inicial en Más → Mi caja; puede ser $0.")
-    require((date, actor) not in s["closed"], "Tu caja está cerrada. Un administrador debe reabrirla.")
+    actor = cash_owner(s, actor)
+    require(s.get("schema", 2) >= 3 or (date, actor) in s["openings"], "Primero registra el fondo inicial en Más → Caja general; puede ser $0.")
+    require((date, actor) not in s["closed"], "La caja general está cerrada. Un administrador debe reabrirla.")
 
 
 def int_amount(value, positive=False):
@@ -381,7 +400,7 @@ def validate_event(s, event, role="operador", users=()):
         require(p["reason"].strip(), "Escribe el motivo de corrección.")
         if payment["method"] == "Efectivo":
             cash_ready(s, payment["actor"], date)
-            require(cash_total(s, payment["actor"], date) >= payment["amount"], "No alcanza el efectivo de la caja original para revertirlo hoy.")
+            require(operating_cash(s, payment["actor"], date) >= payment["amount"], "No alcanza el efectivo de la caja original para revertirlo hoy.")
         return
     if kind == "sale":
         require(p["id"] not in s["orders"], "Este pedido ya existe.")
@@ -435,6 +454,7 @@ def validate_event(s, event, role="operador", users=()):
         if p["paid"]:
             require(p["method"] in METHODS, "Selecciona cómo se recibió el pago.")
             if p["method"] == "Efectivo":
+                int_amount(p.get("received", p["paid"]))
                 require(p.get("received", p["paid"]) >= p["paid"], "El efectivo recibido no alcanza para el cobro.")
                 cash_ready(s, actor, date)
     elif kind in {"payment", "refund"}:
@@ -446,10 +466,11 @@ def validate_event(s, event, role="operador", users=()):
         require(p["amount"] <= limit, "El saldo cambió o el importe lo excede. Actualiza y revisa la cuenta.")
         if p["method"] == "Efectivo":
             if kind == "payment":
+                int_amount(p.get("received", p["amount"]))
                 require(p.get("received", p["amount"]) >= p["amount"], "El efectivo recibido no alcanza para el abono.")
             cash_ready(s, actor, date)
             if kind == "refund":
-                require(cash_total(s, actor, date) >= p["amount"], "No hay suficiente efectivo registrado en tu caja.")
+                require(operating_cash(s, actor, date) >= p["amount"], "No hay suficiente efectivo registrado en tu caja.")
     elif kind in {"line_state", "cancel_line"}:
         order = s["orders"].get(p["order"])
         require(order is not None, "Pedido no encontrado.")
@@ -512,28 +533,35 @@ def validate_event(s, event, role="operador", users=()):
                     "Hubo movimientos durante el conteo. Actualiza y vuelve a contar al terminar la venta.")
     elif kind == "opening":
         int_amount(p["amount"])
-        require((date, actor) not in s["openings"], "Tu fondo inicial ya está registrado hoy.")
+        if s.get("schema", 2) >= 3:
+            require(p.get("shared") is True, "Actualiza la app para registrar el fondo general.")
+            require(not any(d == date for d, _ in s["openings"]), "El fondo general de hoy ya está registrado.")
+            cash_ready(s, actor, date)
+        else:
+            require((date, actor) not in s["openings"], "Tu fondo inicial ya está registrado hoy.")
     elif kind in {"expense", "withdraw", "transfer"}:
         int_amount(p["amount"], True)
         require(p.get("reason", "").strip(), "Escribe el concepto.")
         if kind == "transfer":
+            require(s.get("schema", 2) < 3, "La caja es general: no se necesitan traspasos entre usuarios.")
             require(p["target"] in users and p["target"] != actor, "Elige otro operador.")
         else:
             require(p["method"] in METHODS, "Método inválido.")
         if kind == "transfer" or p["method"] == "Efectivo":
             cash_ready(s, actor, date)
-            require(cash_total(s, actor, date) >= p["amount"], "El movimiento supera tu efectivo registrado.")
+            require(operating_cash(s, actor, date) >= p["amount"], "El movimiento supera tu efectivo registrado.")
     elif kind == "transfer_accept":
         transfer = s["transfers"].get(p["transfer"])
         require(transfer and transfer["target"] == actor and transfer["status"] == "Pendiente", "Traspaso no disponible para ti.")
         cash_ready(s, actor, date)
     elif kind == "close":
         actor = p.get("owner", actor)
-        require(actor in users, "Responsable no encontrado.")
+        require(actor in users or actor == "__puesto__", "Responsable no encontrado.")
+        require(s.get("schema", 2) < 3 or actor == "__puesto__", "Haz el corte de la caja general.")
         cash_ready(s, actor, date)
         int_amount(p["counted"])
         require(p["expected"] == cash_total(s, actor, date), "Tu caja cambió mientras contabas. Actualiza antes de cerrar.")
-        require(not any(t["status"] == "Pendiente" and (t["sender"] == actor or t["target"] == actor)
+        require(not any(t["status"] == "Pendiente" and (actor == "__puesto__" or t["sender"] == actor or t["target"] == actor)
                         for t in s["transfers"].values()), "Confirma los traspasos pendientes antes del corte.")
     elif kind == "reopen":
         require((date, p["owner"]) in s["closed"], "Esa caja no está cerrada hoy.")
@@ -696,10 +724,10 @@ def refresh_store_runtime(store):
         # Reuse its data/connection/uncertain event, but bind the current methods.
         if type(store) is not Store:
             store.__class__ = Store
-        if getattr(store, "runtime_revision", None) != "3.2":
+        if getattr(store, "runtime_revision", None) != "3.4":
             store.cached = None
             store.cached_at = 0.0
-            store.runtime_revision = "3.2"
+            store.runtime_revision = "3.4"
     return store
 
 
@@ -880,7 +908,7 @@ def legacy_preview(book):
 # ---------------------------------------------------------------------------
 CSS = """
 <style>
-.stApp {background:#f5f7f6;color:#183a31;}
+.stApp {--primary-color:#155b46;--st-primary-color:#155b46;background:#f5f7f6;color:#183a31;}
 .block-container {max-width:1100px;padding-top:3.5rem;padding-bottom:4rem;}
 html, body, [data-testid="stMarkdownContainer"] p {font-size:17px;}
 h1 {font-size:1.85rem!important;letter-spacing:-.04em;}
@@ -890,14 +918,23 @@ h2 {font-size:1.45rem!important;} h3 {font-size:1.2rem!important;}
  min-height:58px!important;border-radius:12px!important;font-size:17px!important;
  font-weight:600!important;white-space:pre-wrap!important;padding:12px 16px!important;}
 button p {font-size:17px!important;}
+button:hover {border-color:#267b60!important;color:#155b46!important;}
+button[kind="primary"]:hover {background:#104735!important;color:white!important;}
+[aria-checked="true"], [aria-selected="true"] {accent-color:#155b46!important;}
+[data-baseweb="tab-highlight"], [data-baseweb="slider"] [role="slider"] {background:#155b46!important;}
+[data-testid="stAlert"] {background:#e4f0e9!important;color:#183a31!important;border-color:#80aa95!important;}
+[data-testid="stAlert"] svg {color:#155b46!important;}
+input {accent-color:#155b46;}
+[data-baseweb="input"]:focus-within {border-color:#155b46!important;}
+
 div[data-baseweb="input"],div[data-baseweb="select"] > div {min-height:52px;font-size:17px;}
 button[kind="primary"] {background:#155b46;border-color:#155b46;color:white;}
 [data-testid="stVerticalBlockBorderWrapper"] > div {border-radius:16px;}
 [data-testid="stMetricValue"] {font-size:2rem;color:#155b46;}
-.faro-account {background:#fff;border:1px solid #d9e3dd;border-left:5px solid #be7c22;
+.faro-account {background:#fff;border:1px solid #d9e3dd;border-left:5px solid #267b60;
  padding:20px;border-radius:14px;margin:8px 0 14px;}
 .faro-account h3 {margin:0 0 5px;font-size:1.3rem!important;color:#163f32;}
-.faro-account .amount {font-size:2.3rem;font-weight:750;color:#875516;line-height:1.2;margin:8px 0;}
+.faro-account .amount {font-size:2.3rem;font-weight:750;color:#155b46;line-height:1.2;margin:8px 0;}
 .faro-muted {color:#526b60;font-size:15px;}
 [data-testid="stButtonGroup"] button {min-height:54px!important;border-radius:10px!important;padding:10px 16px!important;}
 [data-testid="stButtonGroup"] {gap:8px;}
@@ -932,14 +969,14 @@ def account_card(customer, balance):
 
 
 def cash_prompt(s, user, key):
-    today = (day(), user["id"])
+    today = (day(), cash_owner(s, user["id"]))
     if (s.get("schema", 2) >= 3 or today in s["openings"]) and today not in s["closed"]:
         return True
     st.info("Abre tu caja del día antes de recibir efectivo; el fondo puede ser $0." if today not in s["openings"]
             else "Tu caja está cerrada. Solicita al administrador que la reabra antes de recibir efectivo.")
-    if st.button("Ir a mi caja", key=key, width="stretch"):
+    if st.button("Ir a caja general", key=key, width="stretch"):
         st.session_state.nav_next = "Más"
-        st.session_state.more_page = "Mi caja"
+        st.session_state.more_page = "Caja general"
         st.rerun()
     return False
 
@@ -1488,6 +1525,9 @@ export default function(component) {
   const {data, parentElement} = component;
   const key = '__faroKitchenSound32';
   const state = window[key] || (window[key] = {context:null, enabled:false, previous:null, pending:false});
+  const panel = parentElement.querySelector('#soundMenu');
+  panel.open=!!state.menuOpen;
+  panel.ontoggle=()=>{state.menuOpen=panel.open;};
   const play = parentElement.querySelector('#enableSound');
   const mute = parentElement.querySelector('#muteSound');
   const status = parentElement.querySelector('#soundStatus');
@@ -1502,15 +1542,18 @@ export default function(component) {
       state.pending = true; paint(); return;
     }
     const ctx=state.context;
-    [0,0.30,0.60].forEach((offset,i) => {
-      const osc=ctx.createOscillator(), gain=ctx.createGain(), start=ctx.currentTime+offset;
-      osc.type='sine'; osc.frequency.value=i===1?1046:784;
-      gain.gain.setValueAtTime(0,start);
-      gain.gain.linearRampToValueAtTime(0.24,start+0.025);
-      gain.gain.exponentialRampToValueAtTime(0.001,start+0.24);
-      osc.connect(gain);gain.connect(ctx.destination);
-      osc.onended=()=>{osc.disconnect();gain.disconnect();};
-      osc.start(start);osc.stop(start+0.25);
+    // Bell strike: fundamental plus inharmonic metallic partials, long decay.
+    [0,0.65,1.30].forEach(offset => {
+      [[880,0.32,1.6],[2425,0.13,1.0],[4755,0.055,0.65]].forEach(([frequency,peak,decay])=>{
+        const osc=ctx.createOscillator(), gain=ctx.createGain(), start=ctx.currentTime+offset;
+        osc.type='sine';osc.frequency.value=frequency;
+        gain.gain.setValueAtTime(0,start);
+        gain.gain.linearRampToValueAtTime(peak,start+0.004);
+        gain.gain.exponentialRampToValueAtTime(0.001,start+decay);
+        osc.connect(gain);gain.connect(ctx.destination);
+        osc.onended=()=>{osc.disconnect();gain.disconnect();};
+        osc.start(start);osc.stop(start+decay+0.02);
+      });
     });
     state.pending=false;
   }
@@ -1529,7 +1572,7 @@ export default function(component) {
   state.previous=current;
   if(changed) ring();
   paint();
-  return ()=>{play.onclick=null;mute.onclick=null;};
+  return ()=>{play.onclick=null;mute.onclick=null;panel.ontoggle=null;};
 }
 """
 
@@ -1537,9 +1580,11 @@ export default function(component) {
 @st.cache_resource
 def kitchen_sound_component():
     return st.components.v2.component("faro_kitchen_sound32", html='''
+      <details id="soundMenu"><summary>🔔 Sonido de cocina</summary>
       <button id="enableSound">🔊 Activar y probar sonido</button>
       <button id="muteSound">Silenciar</button>
-      <p id="soundStatus" role="status" aria-live="polite"></p>''', css='''
+      <p id="soundStatus" role="status" aria-live="polite"></p></details>''', css='''
+      summary {cursor:pointer;font:inherit;font-size:16px;padding:10px 0;color:var(--st-text-color,#155b46);}
       button {min-height:56px;padding:12px 18px;border-radius:12px;border:1px solid #155b46;
               font:inherit;font-size:17px;margin:4px;background:#155b46;color:white;cursor:pointer;}
       #muteSound {background:white;color:#155b46;} button:disabled{opacity:.5;}
@@ -1669,9 +1714,7 @@ def sale_screen(store, s, user, users):
         paid = total if pay_mode == "Paga todo" else cents(st.number_input("Abono de este pedido ($)", min_value=0.0, max_value=total / 100, step=5.0, key="sale_abono_" + version))
         method = choice("Forma de pago", METHODS, horizontal=True, key="sale_method_" + version)
         if method == "Efectivo":
-            change = st.toggle("Calcular cambio", key="sale_change_" + version)
-            tender = cents(st.number_input("Efectivo recibido ($)", min_value=0.0, step=10.0, key="sale_tender_" + version)) if change else paid
-            st.caption("Pago exacto" if not change else "Cambio: " + money(max(0, tender - paid)))
+            tender = received_cash(paid, "sale_cash_" + version)
         else:
             tender = paid
             st.caption("Confirma que el pago sí llegó antes de registrarlo.")
@@ -1801,6 +1844,104 @@ def deliveries_screen(store, user, users):
         st.info("No hay productos listos ni en reparto.")
 
 
+DEBT_SEARCH_JS = r"""
+export default function(component) {
+  const {data,parentElement,setTriggerValue}=component;
+  const state=window.__faroDebtSearch33 || (window.__faroDebtSearch33={query:'',scroll:0,returning:false});
+  const field=parentElement.querySelector('#debtQuery');
+  const list=parentElement.querySelector('#debtResults');
+  const empty=parentElement.querySelector('#noDebts');
+  const clear=parentElement.querySelector('#clearDebtQuery');
+  const normalize=value=>String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  if(state.returning){state.query="";}
+  field.value=state.query;
+  list.replaceChildren();
+  const rows=(data.clients || []).map(client=>{
+    const button=document.createElement('button');
+    button.type='button';
+    const title=document.createElement('span');
+    title.textContent=client.name+' · '+client.status;
+    button.appendChild(title);
+    if(client.reference){const ref=document.createElement('small');ref.textContent=client.reference;button.appendChild(ref);}
+    button.onclick=()=>{
+      if(!state.query)state.scroll=list.scrollTop;
+      state.returning=true;
+      setTriggerValue('selected',client.id);
+    };
+    list.appendChild(button);
+    return {button,text:normalize(client.name+' '+(client.reference || ''))};
+  });
+  function filter(){
+    if(!state.query && field.value)state.scroll=list.scrollTop;
+    state.query=field.value;
+    const words=normalize(field.value).split(/\s+/).filter(Boolean);
+    let matches=0;
+    rows.forEach(row=>{row.button.hidden=!words.every(word=>row.text.includes(word));if(!row.button.hidden)matches++;});
+    empty.hidden=matches>0;
+    clear.disabled=!field.value;
+  }
+  field.oninput=()=>{filter();list.scrollTop=field.value?0:state.scroll;};
+  clear.onclick=()=>{field.value='';filter();list.scrollTop=state.scroll;field.focus();};
+  filter();
+  let alive=true;
+  const restore=()=>{if(alive){list.scrollTop=state.scroll || 0;}};
+  if(state.returning){
+    restore();
+    requestAnimationFrame(restore);
+    state.returning=false;
+  }
+  return ()=>{alive=false;field.oninput=null;clear.onclick=null;rows.forEach(row=>row.button.onclick=null);};
+}
+"""
+
+
+@st.cache_resource
+def debt_search_component():
+    return st.components.v2.component("faro_debt_search33", html='''
+      <label for="debtQuery">Buscar por nombre o ubicación</label>
+      <div class="search"><input id="debtQuery" type="search" autocomplete="off" placeholder="Escribe y verás los resultados…"/>
+      <button id="clearDebtQuery" type="button" aria-label="Limpiar búsqueda">Limpiar</button></div>
+      <div id="debtResults"></div>
+      <p id="noDebts" role="status" hidden>No hay cuentas que coincidan con esta búsqueda.</p>''',
+      css='''
+      #debtResults {max-height:65vh;overflow-y:auto;overscroll-behavior:contain;overflow-anchor:none;padding:2px;}
+      :host {font-family:inherit;color:var(--st-text-color,#183c31);}
+      label {display:block;font-size:17px;margin-bottom:8px;}
+      .search {display:flex;gap:8px;margin-bottom:16px;}
+      input {min-width:0;width:100%;box-sizing:border-box;min-height:56px;border:1px solid #bbc9c3;
+             border-radius:12px;padding:12px;font:inherit;font-size:18px;background:var(--st-secondary-background-color,#f5f8f6);color:inherit;}
+      button {min-height:58px;border:1px solid #cbd6d0;border-radius:12px;padding:14px;
+              font:inherit;font-size:17px;background:var(--st-background-color,white);color:inherit;cursor:pointer;}
+      button:focus-visible,input:focus-visible {outline:3px solid #267b60;outline-offset:2px;}
+      #debtResults button {display:block;width:100%;text-align:left;margin-bottom:10px;}
+      #debtResults button[hidden] {display:none;}
+      small {display:block;font-size:15px;margin-top:5px;color:var(--st-text-color,#526b60);}
+      button:disabled {opacity:.5;cursor:default;}
+      ''',js=DEBT_SEARCH_JS)
+
+
+def cash_suggestions(amount):
+    rounded = ((amount // 1000) + 1) * 1000
+    candidates = sorted({rounded, *[v * 100 for v in (20, 50, 100, 200, 300, 500, 1000)]})
+    values = [v for v in candidates if v > amount][:3]
+    while len(values) < 3:
+        values.append(((values[-1] if values else amount) // 10000 + 1) * 10000)
+    return values
+
+
+def received_cash(amount, key):
+    suggestions = cash_suggestions(amount)
+    labels = ["Exacto", *[money(v) for v in suggestions], "Otra cantidad"]
+    selected = choice("¿Con cuánto paga?", labels, key=key + "_option_" + str(amount))
+    received = (amount if selected == "Exacto" else
+                cents(st.number_input("Efectivo recibido ($)", min_value=0.0, step=10.0, key=key + "_manual_" + str(amount)))
+                if selected == "Otra cantidad" else suggestions[labels.index(selected) - 1])
+    st.metric("Cambio a entregar", money(max(0, received - amount)))
+    if received < amount:
+        st.warning("Falta dinero para este cobro. Si es un abono, ajusta primero el importe a cobrar.")
+    return received
+
+
 def payment_screen(store, s, user, users):
     st.header("Cuentas por cobrar")
     selected = st.session_state.get("selected_debtor")
@@ -1821,12 +1962,7 @@ def payment_screen(store, s, user, users):
             method = choice("Forma de pago", METHODS, key=prefix + "method")
             tender = amount
             if method == "Efectivo":
-                change = st.toggle("Calcular cambio", key=prefix + "change")
-                if change:
-                    tender = cents(st.number_input("Efectivo recibido ($)", min_value=0.0, step=10.0, key=prefix + "tender"))
-                    st.metric("Cambio a entregar", money(max(0, tender - amount)))
-                else:
-                    st.caption("Pago exacto · activa Calcular cambio si te entregan más.")
+                tender = received_cash(amount, prefix + "cash")
             else:
                 st.info("Confirma que el pago llegó antes de registrarlo.")
             st.write("Después de este pago quedará debiendo **" + money(balance - amount) + "**")
@@ -1859,6 +1995,14 @@ def payment_screen(store, s, user, users):
                     for line in order["lines"]:
                         if line["status"] not in {"Entregado", "Cancelado"}:
                             st.info(f"{order['folio']} · {line['qty']} × {line['name']} · {line['status']}")
+        with st.expander("Efectivo recibido y cambio entregado"):
+            for payment in reversed(s["payments"]):
+                if payment["customer"] == selected and payment["method"] == "Efectivo" and not payment.get("refund"):
+                    st.write(f"{payment['at'][:16]} · {payment['actor']} · Cobrado: {money(payment['amount'])}")
+                    if "received" in payment:
+                        st.caption("Recibido: " + money(payment["received"]) + " · Cambio: " + money(payment.get("change", payment["received"] - payment["amount"])))
+                    else:
+                        st.caption("Movimiento anterior sin detalle de efectivo recibido.")
         with st.expander("Editar ubicación para identificar al cliente"):
             with st.form("reference_" + selected):
                 reference = st.text_input("Referencia", value=customer.get("reference", ""))
@@ -1871,26 +2015,21 @@ def payment_screen(store, s, user, users):
         total, count = st.columns(2)
         total.metric("Por cobrar", money(sum(s["balances"][c["id"]] for c in debtors)))
         count.metric("Personas con deuda", len(debtors))
-    search = st.text_input("Buscar por nombre o ubicación", placeholder="Ejemplo: Brenda, puesto azul…", key="debt_search")
     order = choice("Ordenar", ["Mayor deuda", "Nombre", "Ubicación"], key="debt_order")
     all_clients = st.toggle("Incluir cuentas liquidadas y saldos a favor", key="debt_all")
     clients = [c for c in s["customers"].values() if (not c.get("anonymous") or s["balances"].get(c["id"], 0) != 0)
-               and (all_clients or s["balances"].get(c["id"], 0) > 0)
-               and sort_key(search.strip()) in sort_key(c["name"] + " " + c.get("reference", ""))]
+               and (all_clients or s["balances"].get(c["id"], 0) > 0)]
     clients.sort(key=lambda c: ((-s["balances"].get(c["id"], 0) if order == "Mayor deuda" else
                                 sort_key(c.get("reference", "")) if order == "Ubicación" else sort_key(c["name"])), sort_key(c["name"])))
-    st.caption("Toca una cuenta para cobrar. Puedes buscar por nombre o ubicación.")
-    for c in clients:
-        balance = s["balances"].get(c["id"], 0)
+    rows = []
+    for customer in clients:
+        balance = s["balances"].get(customer["id"], 0)
         status = money(balance) + " por cobrar" if balance > 0 else "Liquidado" if balance == 0 else money(-balance) + " a favor"
-        label = c["name"] + "  ·  " + status
-        if c.get("reference"):
-            label += "\n" + c["reference"]
-        if st.button(label, key="debtor_" + c["id"], width="stretch"):
-            st.session_state.selected_debtor = c["id"]
-            st.rerun()
-    if not clients:
-        st.info("No hay cuentas que coincidan con esta búsqueda.")
+        rows.append(dict(id=customer["id"], name=customer["name"], reference=customer.get("reference", ""), status=status))
+    selected = debt_search_component()(data=dict(clients=rows), key="debt_picker", on_selected_change=lambda: None).selected
+    if selected and selected in {c["id"] for c in clients}:
+        st.session_state.selected_debtor = selected
+        st.rerun()
     new_customer_form(store, s, user, users, "pay_")
 
 
@@ -1947,19 +2086,21 @@ def inventory_screen(store, s, user, users):
 
 def cash_screen(store, s, user, users):
     actor, date = user["id"], day()
-    st.header("💵 Mi caja")
-    st.write("Responsable: **" + user["name"] + "** · " + date)
-    if (date, actor) not in s["openings"] and (date, actor) not in s["closed"]:
+    st.header("💵 Caja general")
+    st.write("Una sola caja para todo el puesto · " + date)
+    st.caption("Cada cobro conserva el nombre de quien lo recibió. El administrador puede consultar el desglose por usuario.")
+    if not any(d == date for d, _ in s["openings"]) and (date, cash_owner(s, actor)) not in s["closed"]:
         with st.expander("Registrar fondo para dar cambio", expanded=False), st.form("opening_" + date):
-            amount = st.number_input("Cambio con el que empiezas hoy ($)", min_value=0.0, step=50.0)
+            amount = st.number_input("Fondo de cambio del puesto hoy ($)", min_value=0.0, step=50.0)
             st.caption("No es una venta. Si empiezas sin cambio, registra $0. El dinero del día anterior que conserves también se incluye aquí.")
-            if st.form_submit_button("Iniciar mi caja", type="primary", width="stretch"):
-                send(store, user, users, "opening", dict(amount=cents(amount)))
+            if st.form_submit_button("Guardar fondo general", type="primary", width="stretch"):
+                send(store, user, users, "opening", dict(amount=cents(amount), shared=True))
         if s.get("schema", 2) < 3:
             return
-    expected = cash_total(s, actor, date)
-    st.metric("Efectivo que deberías tener", money(expected))
-    closed = s["closed"].get((date, actor))
+    expected = operating_cash(s, actor, date)
+    st.metric("Fondo general registrado", money(opening_total(s, date)))
+    st.metric("Efectivo esperado en el puesto", money(expected))
+    closed = s["closed"].get((date, cash_owner(s, actor)))
     if closed:
         st.success("Caja cerrada · Contado: " + money(closed["counted"]) + " · Diferencia: " + money(closed["counted"] - closed["expected"]))
     for tid, transfer in s["transfers"].items():
@@ -1972,7 +2113,7 @@ def cash_screen(store, s, user, users):
         elif transfer["sender"] == actor:
             st.info("Entregaste " + money(transfer["amount"]) + " a " + transfer["target"] + "; falta que confirme.")
     if not closed:
-        mode = choice("Registrar", (["Entrega de dinero", "Gasto", "Retiro", "Corte"] if user["role"] == "admin" else ["Entrega de dinero", "Gasto"]), horizontal=True)
+        mode = choice("Registrar", (["Gasto", "Retiro", "Corte"] if user["role"] == "admin" else ["Gasto"]), horizontal=True)
         if mode == "Entrega de dinero":
             others = [x for x in users if x != actor]
             if others:
@@ -1989,7 +2130,7 @@ def cash_screen(store, s, user, users):
                 reason = st.text_input("Concepto")
                 amount = st.number_input("Importe ($)", min_value=0.0, step=10.0)
                 method = choice("Pagado con", METHODS, horizontal=True)
-                st.caption("Solo los movimientos en efectivo se restan de tu caja. Una compra aquí no suma inventario; registra también su entrada.")
+                st.caption("Solo los movimientos en efectivo se restan de la caja general. Una compra aquí no suma inventario; registra también su entrada.")
                 if st.form_submit_button("Registrar " + mode.lower(), type="primary", width="stretch"):
                     send(store, user, users, "expense" if mode == "Gasto" else "withdraw", dict(amount=cents(amount), reason=reason, method=method))
         else:
@@ -1998,8 +2139,8 @@ def cash_screen(store, s, user, users):
                 reason = st.text_input("Observaciones del corte")
                 st.write("Esperado: **" + money(expected) + "**")
                 st.caption("El corte conserva pedidos, cuentas por cobrar e historial. Confirma tus traspasos primero.")
-                if st.form_submit_button("Guardar corte de mi caja", type="primary", width="stretch"):
-                    send(store, user, users, "close", dict(expected=expected, counted=cents(counted), reason=reason))
+                if st.form_submit_button("Guardar corte general", type="primary", width="stretch"):
+                    send(store, user, users, "close", dict(owner=cash_owner(s, actor), expected=expected, counted=cents(counted), reason=reason))
     with st.expander("Mis movimientos de efectivo de hoy", expanded=True):
         for row in s["cash"]:
             if row["owner"] == actor and row["date"] == date:
@@ -2034,18 +2175,22 @@ def reports_screen(store, s, user, users):
     st.caption("Cobros incluye abonos de compras anteriores. Cuentas por cobrar es el saldo actual, no un saldo histórico a esa fecha.")
     expenses = [e for e in s["events"] if e["kind"] == "expense" and e["at"][:10] == report_date]
     st.write("Gastos del día: **" + money(sum(e["payload"]["amount"] for e in expenses)) + "**")
-    owners = set(users) | {x["owner"] for x in s["cash"] if x["date"] == report_date}
+    st.metric("Fondo general del día", money(opening_total(s, report_date)))
+    st.metric("Efectivo esperado del puesto", money(cash_total(s, "__puesto__", report_date)))
+    close = s["closed"].get((report_date, "__puesto__"))
+    if close:
+        st.write("Contado: **" + money(close["counted"]) + "** · Diferencia: **" + money(close["counted"] - close["expected"]) + "**")
+    owners = set(users) | {p["actor"] for p in payments} | {o["actor"] for o in sales}
     cash_rows = []
     for owner in sorted(owners):
-        close = s["closed"].get((report_date, owner))
-        cash_rows.append({"Responsable": users.get(owner, {}).get("nombre", owner),
-                         "Ventas": money(sum(o["total"] for o in sales if o["actor"] == owner)),
-                         "Cobros": money(sum((-1 if p.get("refund") else 1) * p["amount"] for p in payments if p["actor"] == owner)),
-                         "Fondo inicial": money(s["openings"].get((report_date, owner), 0)),
-                         "Efectivo esperado": money(cash_total(s, owner, report_date)),
-                         "Contado": money(close["counted"]) if close else "Sin corte",
-                         "Diferencia": money(close["counted"] - close["expected"]) if close else ""})
-    st.subheader("Dinero por responsable")
+        row = {"Responsable": users.get(owner, {}).get("nombre", owner),
+               "Ventas": money(sum(o["total"] for o in sales if o["actor"] == owner))}
+        for method in METHODS:
+            row["Cobros " + method] = money(sum((-1 if p.get("refund") else 1) * p["amount"]
+                for p in payments if p["actor"] == owner and p["method"] == method))
+        cash_rows.append(row)
+    st.subheader("Cobros por usuario")
+    st.caption("Importes netos, descontando devoluciones y correcciones. El fondo general no se cuenta como venta ni como cobro de un usuario.")
     st.dataframe(cash_rows, hide_index=True, width="stretch")
     transit = sum(t["amount"] for t in s["transfers"].values() if t["status"] == "Pendiente")
     st.write("Entregas de dinero pendientes de confirmar, actuales: **" + money(transit) + "**")
@@ -2068,11 +2213,11 @@ def reports_screen(store, s, user, users):
     st.download_button("Descargar productos del día (CSV)", export_csv(details), "ventas_" + report_date + ".csv", "text/csv", width="stretch")
     st.download_button("Descargar respaldo completo (JSON)", json.dumps(s["events"], ensure_ascii=False, indent=2),
                        "respaldo_faro_" + day() + ".json", "application/json", width="stretch")
-    closed_today = [u for d, u in s["closed"] if d == day() and u in users]
+    closed_today = [u for d, u in s["closed"] if d == day() and (u in users or u == "__puesto__")]
     if closed_today:
         with st.expander("Reabrir una caja de hoy"):
             with st.form("reopen"):
-                owner = st.selectbox("Responsable", closed_today)
+                owner = st.selectbox("Caja", closed_today, format_func=lambda x: "Caja general" if x == "__puesto__" else x)
                 reason = st.text_input("Motivo")
                 if st.form_submit_button("Reabrir conservando el corte anterior"):
                     send(store, user, users, "reopen", dict(owner=owner, reason=reason))
@@ -2162,12 +2307,11 @@ def edit_sent_line(store, s, user, users, order, line):
 
 def admin_close_screen(store, s, user, users):
     st.subheader("Hacer corte de caja")
-    owners = sorted(({e["actor"] for e in s["events"] if e["at"][:10] == day()} | {user["id"]}) -
-        {owner for date, owner in s["closed"] if date == day()})
-    if not owners:
-        st.info("Todas las cajas de hoy tienen corte.")
+    owner = "__puesto__"
+    if (day(), owner) in s["closed"]:
+        st.info("La caja general de hoy ya tiene corte. Puedes reabrirla abajo si es necesario.")
         return
-    owner = st.selectbox("Responsable del corte", owners, format_func=lambda x: users.get(x, {}).get("nombre", x))
+    st.caption("Corte único del puesto. Los cobros siguen desglosados por usuario.")
     expected = cash_total(s, owner, day())
     st.metric("Efectivo esperado", money(expected))
     with st.form("admin_close_" + owner + str(expected)):
@@ -2201,6 +2345,9 @@ def ticket_text(order, kind):
             lines.append("Pedido anterior: consultar cuenta")
         else:
             lines.append("Pago inicial: " + money(order["paid"]))
+            if order.get("method") == "Efectivo" and order.get("paid") and "received" in order:
+                lines.append("Efectivo recibido: " + money(order["received"]))
+                lines.append("Cambio: " + money(order["received"] - order["paid"]))
             lines.append("Abonos posteriores: ver cuenta")
     else:
         lines.append("COMANDA DE COCINA")
@@ -2345,11 +2492,11 @@ def main():
     elif nav == "Cobrar":
         payment_screen(store, s, user, users)
     else:
-        options = ["Mi caja", "Inventario", "Pedidos", "Catálogo"]
+        options = ["Caja general", "Inventario", "Pedidos", "Catálogo"]
         if user["role"] == "admin":
             options += ["Resumen y cortes", "Corregir cuentas"]
         page = st.selectbox("Abrir", options, key="more_page")
-        {"Mi caja": cash_screen, "Inventario": inventory_screen, "Pedidos": history_screen,
+        {"Caja general": cash_screen, "Inventario": inventory_screen, "Pedidos": history_screen,
          "Resumen y cortes": reports_screen, "Catálogo": catalog_screen, "Corregir cuentas": corrections_screen}[page](store, s, user, users)
 
 
