@@ -148,6 +148,15 @@ def apply_event(s, event):
             add_stock(s, x["location"], x["asset"], x["qty"])
         for order in p.get("legacy_orders", []):
             s["orders"][order["id"]] = order
+    elif kind == "inventory_v32":
+        for product in s["products"].values():
+            if "chilaquiles" in sort_key(product["name"]):
+                product["recipe"] = {}
+        for order in s["orders"].values():
+            for line in order["lines"]:
+                if not line.get("consumed") and "chilaquiles" in sort_key(line["name"]):
+                    line["recipe"] = {}
+        s["inventory_revision"] = 32
     elif kind == "inventory_v31":
         for product in s["products"].values():
             if is_torta(product):
@@ -329,6 +338,9 @@ def validate_event(s, event, role="operador", users=()):
         require(not s["initialized"], "La importación ya se realizó; no se duplicó.")
         return
     require(s["initialized"], "Primero inicializa Faro V2.")
+    if kind == "inventory_v32":
+        require(s.get("schema", 2) >= 3 and s.get("inventory_revision", 0) < 32 and not p, "La actualización ya está aplicada.")
+        return
     if kind == "inventory_v31":
         require(s.get("schema", 2) >= 3 and s.get("inventory_revision", 0) < 31 and not p, "El ajuste de inventario ya está aplicado o no corresponde.")
         return
@@ -379,8 +391,16 @@ def validate_event(s, event, role="operador", users=()):
         total = 0
         needs = defaultdict(int)
         for line in p["lines"]:
-            require(line["product"] in s["products"], "Un producto ya no existe.")
-            product = s["products"][line["product"]]
+            if line.get("free_item"):
+                require(line["product"].startswith("extra_") and 0 < len(line["name"].strip()) <= 150,
+                        "Escribe la descripción del extra.")
+                require(line["recipe"] == {} and line["category"] == "Agregar extra", "El extra libre no controla inventario.")
+                int_amount(line["base_price"], True)
+                product = dict(id=line["product"], name=line["name"], price=line["base_price"],
+                               category="Agregar extra", recipe={}, active=True)
+            else:
+                require(line["product"] in s["products"], "Un producto ya no existe.")
+                product = s["products"][line["product"]]
             require(product["active"] and product["price"] is not None, "Un producto está desactivado o sin precio.")
             require(line["base_price"] == product["price"], "Cambió un precio. Actualiza ese producto en el pedido.")
             require(line["recipe"] == product["recipe"], "Cambió el control de existencias de un producto. Agrégalo de nuevo.")
@@ -438,7 +458,7 @@ def validate_event(s, event, role="operador", users=()):
         require(line["status"] == p["expected"], "El estado cambió desde otro teléfono. Actualiza la pantalla.")
         require(line["status"] != "Cancelado", "El producto ya está cancelado.")
         if kind == "line_state":
-            transitions = {"Por preparar": ["Preparando"], "Preparando": ["Listo"],
+            transitions = {"Por preparar": ["Preparando", "Listo"], "Preparando": ["Listo"],
                            "Listo": ["En reparto", "Entregado"], "En reparto": ["Entregado"]}
             require(p["status"] in transitions.get(line["status"], []), "Cambio de estado no permitido.")
         else:
@@ -471,6 +491,9 @@ def validate_event(s, event, role="operador", users=()):
             require(location == "Puesto" and kind != "stock_move", "Ahora todas las existencias están unificadas.")
         for asset, qty in p["items"].items():
             require(asset in s["assets"], "Insumo desconocido.")
+            if s.get("schema", 2) >= 3 and role != "admin":
+                require(asset != "vaso_caliente" and asset in s["products"] and is_torta(s["products"][asset]),
+                        "Solo el administrador puede editar los vasos. Puedes editar las tortas.")
             if kind == "stock_adjust":
                 require(type(qty) is int, "El ajuste debe ser entero.")
                 require(available(s, location, asset) + qty >= 0, "El ajuste dejaría existencias negativas o sin reservas.")
@@ -479,7 +502,7 @@ def validate_event(s, event, role="operador", users=()):
             if kind in {"stock_loss", "stock_move"}:
                 require(available(s, location, asset) >= qty, "No hay suficientes existencias libres.")
             if kind == "stock_count" and p.get("adjust"):
-                require(role == "admin", "Solo el administrador puede ajustar con un conteo.")
+                require(role == "admin" or (s.get("schema", 2) >= 3 and asset in s["products"] and is_torta(s["products"][asset])), "Solo admin puede ajustar ese insumo.")
                 require(qty >= reserved(s, location, asset), "El conteo es menor que lo reservado: resuelve esos pedidos antes de ajustar.")
         if kind == "stock_move":
             require(p["target"] in LOCATIONS and p["target"] != p["source"], "Elige ubicaciones diferentes.")
@@ -673,10 +696,10 @@ def refresh_store_runtime(store):
         # Reuse its data/connection/uncertain event, but bind the current methods.
         if type(store) is not Store:
             store.__class__ = Store
-        if getattr(store, "runtime_revision", None) != "3.1.1":
+        if getattr(store, "runtime_revision", None) != "3.2":
             store.cached = None
             store.cached_at = 0.0
-            store.runtime_revision = "3.1.1"
+            store.runtime_revision = "3.2"
     return store
 
 
@@ -937,7 +960,8 @@ def safe_state(store, fresh=False):
 
 
 def is_torta(product):
-    return "torta" in sort_key(product["name"]) or "torta" in sort_key(product.get("category", ""))
+    return "chilaquiles" not in sort_key(product["name"]) and (
+        "torta" in sort_key(product["name"]) or "torta" in sort_key(product.get("category", "")))
 
 
 def controlled_recipe(product):
@@ -964,7 +988,7 @@ def category_label(value):
 
 def ordered_categories(products):
     labels = {category_label(p["category"]) for p in products}
-    return [c for c in CATEGORY_ORDER if c in labels] + sorted(labels - set(CATEGORY_ORDER), key=sort_key) + ["Todos"]
+    return [c for c in CATEGORY_ORDER if c in labels] + sorted(labels - set(CATEGORY_ORDER), key=sort_key) + ["Agregar extra"]
 
 
 def auto_kitchen(product):
@@ -1086,7 +1110,7 @@ def login(store, users):
     return dict(id=current["id"], name=current["name"], role="admin" if authorized else "operador")
 
 def finish_action(event):
-    if event["kind"] == "stock_load":
+    if event["kind"] in {"stock_load", "stock_count"}:
         st.session_state.stock_form_version = st.session_state.get("stock_form_version", 0) + 1
     if event["kind"] == "sale":
         if st.session_state.get("auth", {}).get("id") == event["actor"]:
@@ -1435,6 +1459,108 @@ def editor_screen(s):
         st.session_state.sale_stage_next = "Productos" if edit["new"] else "Cobrar pedido"
         st.rerun()
 
+def delivery_day(order, line):
+    value = line['due'] if order.get('legacy') else order['at']
+    return datetime.fromisoformat(value).astimezone(TZ).date().isoformat()
+
+
+def free_item_screen():
+    st.subheader("Agregar extra")
+    with st.form("free_sale_item", clear_on_submit=False):
+        name = st.text_input("¿Qué vas a cobrar?", placeholder="Ejemplo: extra de pollo, pedido especial…", max_chars=150)
+        price = st.number_input("Precio por unidad ($)", min_value=0.0, step=1.0)
+        qty = int(st.number_input("Cantidad", min_value=1, max_value=100, value=1, step=1))
+        kitchen = st.toggle("Enviar este extra a cocina")
+        if st.form_submit_button("Agregar al pedido", type="primary", width="stretch"):
+            if not name.strip() or cents(price) <= 0:
+                st.error("Escribe la descripción y un precio mayor a cero.")
+                return
+            product = dict(id="extra_" + uid(), name=name.strip(), category="Agregar extra", price=cents(price), recipe={})
+            line = make_line(product, "Puesto", kitchen or auto_kitchen(product))
+            line.update(free_item=True, qty=qty)
+            add_to_cart(line)
+            st.session_state.sale_stage_next = "Cobrar pedido"
+            st.rerun()
+
+
+KITCHEN_SOUND_JS = r"""
+export default function(component) {
+  const {data, parentElement} = component;
+  const key = '__faroKitchenSound32';
+  const state = window[key] || (window[key] = {context:null, enabled:false, previous:null, pending:false});
+  const play = parentElement.querySelector('#enableSound');
+  const mute = parentElement.querySelector('#muteSound');
+  const status = parentElement.querySelector('#soundStatus');
+  function paint() {
+    const running = state.enabled && state.context && state.context.state === 'running';
+    status.textContent = running ? 'Sonido activado · mantén Cocina abierta y el volumen audible.' :
+      (state.pending ? 'Hay pedidos nuevos. Activa el sonido para escucharlos.' : 'Sonido desactivado. Toca Activar y probar sonido.');
+    mute.disabled = !state.enabled;
+  }
+  function ring() {
+    if (!state.enabled || !state.context || state.context.state !== 'running') {
+      state.pending = true; paint(); return;
+    }
+    const ctx=state.context;
+    [0,0.30,0.60].forEach((offset,i) => {
+      const osc=ctx.createOscillator(), gain=ctx.createGain(), start=ctx.currentTime+offset;
+      osc.type='sine'; osc.frequency.value=i===1?1046:784;
+      gain.gain.setValueAtTime(0,start);
+      gain.gain.linearRampToValueAtTime(0.24,start+0.025);
+      gain.gain.exponentialRampToValueAtTime(0.001,start+0.24);
+      osc.connect(gain);gain.connect(ctx.destination);
+      osc.onended=()=>{osc.disconnect();gain.disconnect();};
+      osc.start(start);osc.stop(start+0.25);
+    });
+    state.pending=false;
+  }
+  play.onclick = async () => {
+    try {
+      const Audio=window.AudioContext || window.webkitAudioContext;
+      if (!Audio) throw Error('unsupported');
+      if (!state.context || state.context.state==='closed') state.context=new Audio();
+      await state.context.resume();
+      state.enabled=true;ring();paint();
+    } catch (_) {state.enabled=false;status.textContent='No se pudo activar. Revisa el sonido de este navegador e inténtalo otra vez.';}
+  };
+  mute.onclick=()=>{state.enabled=false;paint();};
+  const current=new Set(data.items || []);
+  const changed=state.previous!==null && [...current].some(id=>!state.previous.has(id));
+  state.previous=current;
+  if(changed) ring();
+  paint();
+  return ()=>{play.onclick=null;mute.onclick=null;};
+}
+"""
+
+
+@st.cache_resource
+def kitchen_sound_component():
+    return st.components.v2.component("faro_kitchen_sound32", html='''
+      <button id="enableSound">🔊 Activar y probar sonido</button>
+      <button id="muteSound">Silenciar</button>
+      <p id="soundStatus" role="status" aria-live="polite"></p>''', css='''
+      button {min-height:56px;padding:12px 18px;border-radius:12px;border:1px solid #155b46;
+              font:inherit;font-size:17px;margin:4px;background:#155b46;color:white;cursor:pointer;}
+      #muteSound {background:white;color:#155b46;} button:disabled{opacity:.5;}
+      p {font:inherit;font-size:15px;color:var(--st-text-color);}''', js=KITCHEN_SOUND_JS)
+
+
+def kitchen_notifications(s):
+    tokens=[]
+    for order in s["orders"].values():
+        if order.get("legacy"):
+            continue
+        for line in order["lines"]:
+            if line["kitchen"] and line["status"] in {"Por preparar", "Preparando"} and not kitchen_upcoming(line, now()):
+                tokens.append(line["id"] + ":" + str(len(line.get("changes", []))))
+    previous=st.session_state.get("kitchen_notification_tokens")
+    if previous is not None and set(tokens)-set(previous):
+        st.toast("Hay pedidos nuevos o modificados para preparar", icon="🔔")
+    st.session_state.kitchen_notification_tokens=tokens
+    kitchen_sound_component()(data=dict(items=sorted(tokens)), key="kitchen_sound")
+
+
 def sale_screen(store, s, user, users):
     st.header("Nueva venta")
     st.session_state.setdefault("cart", [])
@@ -1443,7 +1569,7 @@ def sale_screen(store, s, user, users):
         return
     if st.session_state.get("last_order") in s["orders"]:
         oid = st.session_state.last_order
-        with st.expander("Último pedido · " + s["orders"][oid]["folio"]):
+        with st.expander("Último pedido · " + s["orders"][oid]["customer"]["name"]):
             st.write("Total: " + money(s["orders"][oid]["total"]))
             if st.button("Ver ticket", key="last_ticket", width="stretch"):
                 st.session_state.ticket = dict(order=oid, type="venta")
@@ -1469,8 +1595,13 @@ def sale_screen(store, s, user, users):
                 if current not in categories:
                     st.session_state.pop("category", None)
                 current = choice("Categoría", categories, key="category")
-                if current != "Todos":
-                    products = [x for x in products if category_label(x["category"]) == current]
+                if current == "Agregar extra":
+                    free_item_screen()
+                    if cart and st.button("Revisar y cobrar · " + money(total_now), type="primary", width="stretch"):
+                        st.session_state.sale_stage_next = "Cobrar pedido"
+                        st.rerun()
+                    return
+                products = [x for x in products if category_label(x["category"]) == current]
         if not products:
             st.info("No hay productos en esta selección. Prueba otra categoría o agrégalos en Más → Catálogo.")
         cols = st.columns(2)
@@ -1587,6 +1718,7 @@ def order_heading(order):
 def kitchen_screen(store, user, users):
     s = safe_state(store)
     st.header("👨‍🍳 Cocina")
+    kitchen_notifications(s)
     st.caption("Última consulta: " + now().strftime("%H:%M:%S") + " · actualización cada 10 segundos mientras esta pantalla está abierta")
     mode = choice("Mostrar", ["Ahora", "Agendados"], horizontal=True, key="k_mode_v3")
     st.caption("Los agendados pasan a Ahora 15 minutos antes de su entrega.")
@@ -1601,11 +1733,6 @@ def kitchen_screen(store, user, users):
             if (mode == "Agendados" and upcoming) or (mode == "Ahora" and not upcoming):
                 entries.append((due, order, line))
     entries.sort(key=lambda x: (x[1]["at"], x[2]["id"]) if mode == "Ahora" else (x[0].isoformat(), x[1]["at"]))
-    previous = st.session_state.get("known_kitchen")
-    ids = {line["id"] for _, _, line in entries}
-    if previous is not None and ids - previous:
-        st.toast("Llegaron productos nuevos a esta vista de cocina", icon="🔔")
-    st.session_state.known_kitchen = ids
     if not entries:
         st.success("No hay productos pendientes en esta vista.")
     for due, order, line in entries:
@@ -1631,9 +1758,8 @@ def kitchen_screen(store, user, users):
                         st.write("Antes: " + str(change["before"]["qty"]) + " · " + change["before"]["notes"])
                         st.write("Ahora: " + str(change["after"]["qty"]) + " · " + change["after"]["notes"])
             st.write("Estado: **" + line["status"] + "**")
-            next_state = "Preparando" if line["status"] == "Por preparar" else "Listo"
-            if st.button("Aceptar y preparar" if next_state == "Preparando" else "✅ Marcar listo", key="k_" + line["id"], type="primary", width="stretch"):
-                send(store, user, users, "line_state", dict(order=order["id"], line=line["id"], expected=line["status"], status=next_state))
+            if st.button("✅ Marcar listo", key="k_" + line["id"], type="primary", width="stretch"):
+                send(store, user, users, "line_state", dict(order=order["id"], line=line["id"], expected=line["status"], status="Listo"))
             if st.button("Ticket de cocina", key="kt_" + line["id"], width="stretch"):
                 st.session_state.ticket = dict(order=order["id"], type="cocina")
                 st.rerun()
@@ -1648,7 +1774,8 @@ def deliveries_screen(store, user, users):
     for order in sorted(s["orders"].values(), key=lambda o: o["at"]):
         if bool(order.get("legacy")) != (source == "Anteriores"):
             continue
-        lines = [x for x in order["lines"] if x["status"] in {"Listo", "En reparto"}]
+        lines = [x for x in order["lines"] if x["status"] in {"Listo", "En reparto"}
+                 and (source != "Anteriores" or delivery_day(order, x) == day())]
         if not lines:
             continue
         found = True
@@ -1768,55 +1895,54 @@ def payment_screen(store, s, user, users):
 
 
 def inventory_screen(store, s, user, users):
-    st.header("📦 Tortas y vasos")
-    # Includes every configured flavor, even if disabled for sale; hides empty,
-    # unpriced seed templates so Jamon and Torta de jamón do not duplicate the list.
-    names = {"vaso_caliente": "Vasos de café y té"}
+    st.header("📦 Existencias actuales")
+    st.write("Escribe cuántas piezas tienes en total. El número que guardes reemplaza el anterior; no se suma.")
+    admin = user["role"] == "admin"
+    names = {}
     for product in s["products"].values():
-        if is_torta(product) and (product["price"] is not None or product["active"] or
-            s["stock"].get(("Puesto", product["id"]), 0) or reserved(s, "Puesto", product["id"])):
-            for asset in product["recipe"]:
-                if asset in s["assets"]:
-                    names[asset] = product["name"]
-    st.metric("Vasos disponibles para café y té", available(s, "Puesto", "vaso_caliente"))
-    st.caption(f"Existencia física: {s['stock'].get(('Puesto', 'vaso_caliente'), 0)} · Reservados: {reserved(s, 'Puesto', 'vaso_caliente')}")
-    if available(s, "Puesto", "vaso_caliente") <= 20:
-        st.warning("Quedan 20 vasos o menos. Revisa si necesitas reponer.")
-    modes = ["Agregar existencias"] + (["Merma", "Conteo y ajuste"] if user["role"] == "admin" else [])
-    mode = choice("Movimiento", modes, key="stock_v3_mode")
-    if mode == "Agregar existencias":
-        st.caption("Escribe cuántas piezas entran de cada sabor. Deja en 0 los que no vas a agregar y guarda toda la entrada abajo.")
-        version = str(st.session_state.get("stock_form_version", 0))
-        with st.form("stock_batch_" + version):
-            quantities = {}
-            for asset in sorted(names, key=lambda a: (a == "vaso_caliente", sort_key(names[a]))):
-                with st.container(key="stock_row_" + asset):
-                    label, entry = st.columns([2, 1])
-                    label.write("**" + names[asset] + "**")
-                    label.caption(f"Disponibles: {available(s, 'Puesto', asset)} · Reservados: {reserved(s, 'Puesto', asset)}")
-                    quantities[asset] = int(entry.number_input("Ingresar · " + names[asset], min_value=0, value=0, step=1,
-                        key="stock_qty_" + version + "_" + asset, label_visibility="collapsed"))
-            reason = st.text_input("Referencia de la entrada", value="Entrada de mercancía")
-            if st.form_submit_button("Guardar toda la entrada", type="primary", width="stretch"):
-                send(store, user, users, "stock_load", dict(location="Puesto",
-                    items={a: q for a, q in quantities.items() if q > 0}, reason=reason))
+        if is_torta(product) and (product["price"] is not None or product["active"] or s["stock"].get(("Puesto", product["id"]), 0)):
+            names[product["id"]] = product["name"]
+    if admin:
+        names["vaso_caliente"] = "Vasos de café y té"
     else:
-        asset = st.selectbox("¿Qué vas a registrar?", sorted(names, key=lambda a: sort_key(names[a])), format_func=lambda a: names[a])
-        with st.form("stock_admin_" + mode + asset):
-            qty = int(st.number_input("Cantidad contada" if mode == "Conteo y ajuste" else "Cantidad", min_value=0, step=1))
-            reason = st.text_input("Referencia o motivo")
-            if st.form_submit_button("Guardar movimiento", type="primary", width="stretch"):
-                if mode == "Conteo y ajuste":
-                    send(store, user, users, "stock_count", dict(location="Puesto", items={asset: qty},
-                        expected={asset: s["stock"].get(("Puesto", asset), 0)}, adjust=True, reason=reason))
-                else:
-                    send(store, user, users, "stock_loss", dict(location="Puesto", items={asset: qty} if qty else {}, reason=reason))
-    st.caption("Las ventas descuentan automáticamente. Cocina reserva existencias hasta iniciar su preparación.")
-    if user["role"] == "admin":
-        with st.expander("Historial de inventario"):
-            for event in reversed([e for e in s["events"] if e["kind"].startswith("stock_")][-40:]):
+        st.info("Los vasos los modifica el administrador.")
+    st.caption("La torta de chilaquiles no necesita conteo de existencias.")
+    if not names:
+        st.info("No hay tortas configuradas. Puedes agregarlas en Catálogo.")
+        return
+    version = str(st.session_state.get("stock_form_version", 0)) + ("_admin" if admin else "_worker")
+    snapshot = st.session_state.setdefault("inventory_snapshot_" + version,
+        {a: s["stock"].get(("Puesto", a), 0) for a in names})
+    for a in names:
+        snapshot.setdefault(a, s["stock"].get(("Puesto", a), 0))
+    with st.form("inventory_edit_" + version):
+        quantities = {}
+        for asset in sorted(names, key=lambda a: (a == "vaso_caliente", sort_key(names[a]))):
+            with st.container(key="stock_row_" + asset):
+                label, entry = st.columns([2, 1])
+                label.write("**" + names[asset] + "**")
+                quantities[asset] = int(entry.number_input("Existencias · " + names[asset], min_value=0,
+                    value=max(0, snapshot[asset]), step=1, key="stock_actual_" + version + "_" + asset, label_visibility="collapsed"))
+        if st.form_submit_button("Guardar existencias", type="primary", width="stretch"):
+            changed = {a: q for a, q in quantities.items() if q != snapshot[a]}
+            if not changed:
+                st.info("No cambiaste ninguna cantidad.")
+            else:
+                send(store, user, users, "stock_count", dict(location="Puesto", items=changed,
+                    expected={a: snapshot[a] for a in changed}, adjust=True, reason="Actualización de existencias físicas"))
+    if st.button("Actualizar cantidades desde el sistema", width="stretch"):
+        st.session_state.stock_form_version = st.session_state.get("stock_form_version", 0) + 1
+        store.cached = None
+        st.rerun()
+    with st.expander("Productos apartados para pedidos"):
+        st.caption("El conteo incluye las piezas apartadas. No puedes registrar menos piezas que las comprometidas en pedidos pendientes.")
+        rows=[{"Producto":names[a],"Apartados":reserved(s,"Puesto",a),"Libres para vender":available(s,"Puesto",a)} for a in names]
+        st.dataframe(rows, hide_index=True, width="stretch")
+    if admin:
+        with st.expander("Historial de cambios"):
+            for event in reversed([e for e in s["events"] if e["kind"].startswith("stock_")][-30:]):
                 st.write(event["at"][:16] + " · " + users.get(event["actor"], {}).get("nombre", event["actor"]) + " · " + event["payload"].get("reason", ""))
-                st.write({names.get(a, s["assets"].get(a, {}).get("name", a)): q for a, q in event["payload"]["items"].items()})
+                st.write({names.get(a, s["assets"].get(a, {}).get("name", a)): q for a,q in event["payload"]["items"].items()})
 
 
 def cash_screen(store, s, user, users):
@@ -2185,6 +2311,12 @@ def main():
             s = safe_state(store, fresh=True)
             if s.get("inventory_revision", 0) < 31:
                 send(store, user, users, "inventory_v31", {})
+                st.stop()
+    if s.get("inventory_revision", 0) < 32:
+        with store.lock:
+            s = safe_state(store, fresh=True)
+            if s.get("inventory_revision", 0) < 32:
+                send(store, user, users, "inventory_v32", {})
                 st.stop()
     if s["workers"].get(user["id"]) != user["name"]:
         send(store, user, users, "worker", dict(name=user["name"]))
