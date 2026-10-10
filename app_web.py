@@ -666,6 +666,20 @@ class Store:
             return copy.deepcopy(candidate)
 
 
+def refresh_store_runtime(store):
+    """Refresh cached code without replacing the shared lock or pending write."""
+    with store.lock:
+        # cache_resource retains instances when only Store/reducers change.
+        # Reuse its data/connection/uncertain event, but bind the current methods.
+        if type(store) is not Store:
+            store.__class__ = Store
+        if getattr(store, "runtime_revision", None) != "3.1.1":
+            store.cached = None
+            store.cached_at = 0.0
+            store.runtime_revision = "3.1.1"
+    return store
+
+
 @st.cache_resource
 def get_store():
     if os.environ.get("FARO_DEMO") == "1":
@@ -2134,7 +2148,7 @@ def main():
     st.markdown(CSS, unsafe_allow_html=True)
     try:
         users = credentials_config()
-        store = get_store()
+        store = refresh_store_runtime(get_store())
     except RuleError as exc:
         st.error(str(exc))
         st.info("Consulta LEEME.md y secrets_ejemplo.toml. Las credenciales van en Streamlit → Settings → Secrets, nunca en GitHub.")
