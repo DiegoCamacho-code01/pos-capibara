@@ -403,6 +403,7 @@ def validate_event(s, event, role="operador", users=()):
             require(operating_cash(s, payment["actor"], date) >= payment["amount"], "No alcanza el efectivo de la caja original para revertirlo hoy.")
         return
     if kind == "sale":
+        require(p.get("channel", "Vender") in {"Vender", "Mostrador"}, "Sección de venta inválida.")
         require(p["id"] not in s["orders"], "Este pedido ya existe.")
         require(0 < len(p["lines"]) <= 60, "El pedido necesita entre 1 y 60 renglones.")
         require(len({x["id"] for x in p["lines"]}) == len(p["lines"]), "Hay renglones duplicados.")
@@ -425,7 +426,7 @@ def validate_event(s, event, role="operador", users=()):
             require(line["recipe"] == product["recipe"], "Cambió el control de existencias de un producto. Agrégalo de nuevo.")
             if s.get("schema", 2) >= 3:
                 require(line["location"] == "Puesto", "Agrega de nuevo el producto para usar el inventario unificado.")
-                require(not auto_kitchen(product) or (line["kitchen"] and line["status"] == "Por preparar"), "La comida debe enviarse a cocina.")
+                require(p.get("channel") == "Mostrador" or not auto_kitchen(product) or (line["kitchen"] and line["status"] == "Por preparar"), "La comida debe enviarse a cocina.")
                 require(line["unit"] == line["base_price"] + modifier_price(line.get("options", {}), line.get("custom_extras", [])), "El precio de las opciones cambió. Personaliza el producto de nuevo.")
             int_amount(line["qty"], True)
             int_amount(line["unit"])
@@ -724,10 +725,10 @@ def refresh_store_runtime(store):
         # Reuse its data/connection/uncertain event, but bind the current methods.
         if type(store) is not Store:
             store.__class__ = Store
-        if getattr(store, "runtime_revision", None) != "3.4":
+        if getattr(store, "runtime_revision", None) != "3.5":
             store.cached = None
             store.cached_at = 0.0
-            store.runtime_revision = "3.4"
+            store.runtime_revision = "3.5"
     return store
 
 
@@ -1147,16 +1148,28 @@ def login(store, users):
     return dict(id=current["id"], name=current["name"], role="admin" if authorized else "operador")
 
 def finish_action(event):
+    if event["kind"] == "customer":
+        pending = st.session_state.get("new_customer_selection")
+        if pending and pending["id"] == event["payload"]["id"]:
+            st.session_state.select_customer_next = st.session_state.pop("new_customer_selection")
+    if event["kind"] == "payment":
+        st.session_state.payment_result = event["payload"]["customer"]
     if event["kind"] in {"stock_load", "stock_count"}:
         st.session_state.stock_form_version = st.session_state.get("stock_form_version", 0) + 1
     if event["kind"] == "sale":
+        channel = event["payload"].get("channel", "Vender")
+        active = st.session_state.get("sale_channel", "Vender")
         if st.session_state.get("auth", {}).get("id") == event["actor"]:
-            st.session_state.cart = []
-            st.session_state.pop("editing", None)
+            if channel == active:
+                st.session_state.cart = []
+                st.session_state.pop("editing", None)
+                st.session_state.checkout_version = st.session_state.get("checkout_version", 0) + 1
+                st.session_state.sale_stage_next = "Productos"
+            else:
+                draft = st.session_state.setdefault("sale_drafts", {}).setdefault(channel, {})
+                draft.update(cart=[], checkout_version=draft.get("checkout_version", 0) + 1, sale_stage_next="Productos")
+                draft.pop("editing", None)
         st.session_state.last_order = event["payload"]["id"]
-        st.session_state.checkout_version = st.session_state.get("checkout_version", 0) + 1
-    if event["kind"] == "sale":
-        st.session_state.sale_stage_next = "Productos"
     if event["kind"] in {"sale", "payment"} and event["payload"].get("method") == "Efectivo":
         p = event["payload"]
         amount = p["paid"] if event["kind"] == "sale" else p["amount"]
@@ -1358,6 +1371,10 @@ def customer_picker(s, key, allow_anonymous=True):
     if not options:
         st.info("Agrega primero un cliente.")
         return None
+    pending = st.session_state.get("select_customer_next")
+    if pending and pending["key"] == key and pending["id"] in by_id:
+        st.session_state[key] = pending["id"]
+        st.session_state.pop("select_customer_next", None)
     if st.session_state.get(key) not in options:
         st.session_state.pop(key, None)
     choice = st.selectbox("Cliente · escribe para buscar", options,
@@ -1365,13 +1382,16 @@ def customer_picker(s, key, allow_anonymous=True):
     return by_id.get(choice)
 
 
-def new_customer_form(store, s, user, users, prefix):
+def new_customer_form(store, s, user, users, prefix, select_key=None):
     with st.expander("＋ Nuevo cliente"):
         with st.form(prefix + "new_client", clear_on_submit=True):
             name = st.text_input("Nombre o referencia reconocible", key=prefix + "name")
             reference = st.text_input("Dónde encontrarlo", placeholder="Frente a los tacos, puesto azul…", key=prefix + "reference")
             if st.form_submit_button("Guardar cliente", width="stretch"):
-                send(store, user, users, "customer", dict(id=uid(), name=name.strip(), reference=reference.strip(), anonymous=False))
+                customer_id = uid()
+                if select_key:
+                    st.session_state.new_customer_selection = dict(id=customer_id, key=select_key)
+                send(store, user, users, "customer", dict(id=customer_id, name=name.strip(), reference=reference.strip(), anonymous=False))
 
 
 def make_line(product, location, kitchen):
@@ -1462,7 +1482,7 @@ def editor_screen(s):
         date_input = st.date_input("Fecha de entrega", value=max(due.date(), now().date()), min_value=now().date(), key=prefix + "date")
         hour_input = st.time_input("Hora de entrega", value=due.time().replace(second=0, microsecond=0), step=300, key=prefix + "time")
         st.caption("Aparece en Ahora 15 minutos antes de la entrega.")
-    forced_kitchen = auto_kitchen(line) or later
+    forced_kitchen = (auto_kitchen(line) and st.session_state.get("sale_channel", "Vender") != "Mostrador") or later
     selected_kitchen = st.toggle("Enviar a cocina", value=forced_kitchen or line["kitchen"], disabled=forced_kitchen, key=prefix + "kitchen")
     valid_extras = all(e["name"] for e in extra_rows)
     surcharge = modifier_price(options, [e for e in extra_rows if e["name"]])
@@ -1501,19 +1521,19 @@ def delivery_day(order, line):
     return datetime.fromisoformat(value).astimezone(TZ).date().isoformat()
 
 
-def free_item_screen():
+def free_item_screen(mostrador=False):
     st.subheader("Agregar extra")
     with st.form("free_sale_item", clear_on_submit=False):
         name = st.text_input("¿Qué vas a cobrar?", placeholder="Ejemplo: extra de pollo, pedido especial…", max_chars=150)
         price = st.number_input("Precio por unidad ($)", min_value=0.0, step=1.0)
         qty = int(st.number_input("Cantidad", min_value=1, max_value=100, value=1, step=1))
-        kitchen = st.toggle("Enviar este extra a cocina")
+        kitchen = st.toggle("Enviar este extra a cocina", value=mostrador, key="free_kitchen_" + str(mostrador))
         if st.form_submit_button("Agregar al pedido", type="primary", width="stretch"):
             if not name.strip() or cents(price) <= 0:
                 st.error("Escribe la descripción y un precio mayor a cero.")
                 return
             product = dict(id="extra_" + uid(), name=name.strip(), category="Agregar extra", price=cents(price), recipe={})
-            line = make_line(product, "Puesto", kitchen or auto_kitchen(product))
+            line = make_line(product, "Puesto", kitchen or (auto_kitchen(product) and not mostrador))
             line.update(free_item=True, qty=qty)
             add_to_cart(line)
             st.session_state.sale_stage_next = "Cobrar pedido"
@@ -1606,8 +1626,24 @@ def kitchen_notifications(s):
     kitchen_sound_component()(data=dict(items=sorted(tokens)), key="kitchen_sound")
 
 
-def sale_screen(store, s, user, users):
-    st.header("Nueva venta")
+def activate_sale_channel(channel):
+    previous = st.session_state.get("sale_channel", "Vender")
+    if previous != channel:
+        keys = ["cart", "editing", "sale_stage", "sale_stage_next", "checkout_version"]
+        drafts = st.session_state.setdefault("sale_drafts", {})
+        drafts[previous] = {key: copy.deepcopy(st.session_state[key]) for key in keys if key in st.session_state}
+        for key in keys:
+            st.session_state.pop(key, None)
+        for key, value in drafts.pop(channel, {}).items():
+            st.session_state[key] = value
+    st.session_state.sale_channel = channel
+
+
+def sale_screen(store, s, user, users, mostrador=False):
+    activate_sale_channel("Mostrador" if mostrador else "Vender")
+    st.header("Mostrador" if mostrador else "Nueva venta")
+    if mostrador:
+        st.caption("Cada producto se agrega con envío a cocina activado. Puedes desactivarlo en su recuadro antes de guardar.")
     st.session_state.setdefault("cart", [])
     if st.session_state.get("editing"):
         editor_screen(s)
@@ -1641,7 +1677,7 @@ def sale_screen(store, s, user, users):
                     st.session_state.pop("category", None)
                 current = choice("Categoría", categories, key="category")
                 if current == "Agregar extra":
-                    free_item_screen()
+                    free_item_screen(mostrador)
                     if cart and st.button("Revisar y cobrar · " + money(total_now), type="primary", width="stretch"):
                         st.session_state.sale_stage_next = "Cobrar pedido"
                         st.rerun()
@@ -1657,7 +1693,7 @@ def sale_screen(store, s, user, users):
             if stock is not None:
                 label += "\n" + ("Agotado" if stock <= 0 else f"Disponibles: {stock}")
             if cols[i % 2].button(label, key="prod_" + product["id"], width="stretch", disabled=stock is not None and stock <= 0):
-                line = make_line(product, location, auto_kitchen(product))
+                line = make_line(product, location, mostrador or auto_kitchen(product))
                 if product["category"] in {"Frappés", "Esquimos", "Bebidas Frías", "Chamoyadas", "Refreshers", "Smoothies"} or auto_kitchen(product):
                     st.session_state.editing = dict(line=line, new=True)
                 else:
@@ -1678,7 +1714,7 @@ def sale_screen(store, s, user, users):
     for line in cart:
         with st.container(border=True):
             st.write(f"**{line['qty']} × {line['name']} · {money(line['qty'] * line['unit'])}**")
-            automatic = auto_kitchen(line) or line["scheduled"]
+            automatic = (auto_kitchen(line) and not mostrador) or line["scheduled"]
             line["kitchen"] = st.toggle("Enviar a cocina", value=automatic or line["kitchen"], disabled=automatic,
                                          key="line_kitchen_" + line["id"])
             if automatic:
@@ -1700,10 +1736,11 @@ def sale_screen(store, s, user, users):
             if st.button("Personalizar / programar", key="edit_" + line["id"], width="stretch"):
                 st.session_state.editing = dict(line=line, new=False)
                 st.rerun()
-    st.caption("Chilaquiles, torta de chilaquiles, ensaladas y sándwiches van automáticamente a cocina al guardar.")
-    version = str(st.session_state.get("checkout_version", 0))
+    if not mostrador:
+        st.caption("Chilaquiles, torta de chilaquiles, ensaladas y sándwiches van automáticamente a cocina al guardar.")
+    version = ("mostrador_" if mostrador else "") + str(st.session_state.get("checkout_version", 0))
     customer = customer_picker(s, "sale_customer_" + version)
-    new_customer_form(store, s, user, users, "sale_")
+    new_customer_form(store, s, user, users, "sale_" + ("mostrador_" if mostrador else ""), select_key="sale_customer_" + version)
     if customer:
         balance = s["balances"].get(customer["id"], 0)
         st.caption("Saldo anterior: " + money(balance))
@@ -1738,12 +1775,12 @@ def sale_screen(store, s, user, users):
                 if not line["scheduled"]:
                     line["due"] = now().isoformat()
             payload = dict(id=oid, folio=now().strftime("%d%m") + "-" + oid[:6].upper(),
-                           customer=customer or anon, lines=lines, total=total, paid=paid, method=method, received=tender, origin=origin)
+                           customer=customer or anon, lines=lines, total=total, paid=paid, method=method, received=tender, origin=origin, channel="Mostrador" if mostrador else "Vender")
             send(store, user, users, "sale", payload)
     with st.expander("Descartar este pedido sin guardar"):
         if st.button("Confirmar: vaciar pedido", width="stretch"):
             st.session_state.cart = []
-            st.session_state.checkout_version = int(version) + 1
+            st.session_state.checkout_version = st.session_state.get("checkout_version", 0) + 1
             st.rerun()
 
 
@@ -1942,6 +1979,23 @@ def received_cash(amount, key):
     return received
 
 
+def customer_purchases(s, customer_id):
+    rows = []
+    for order in s["orders"].values():
+        if order["customer"]["id"] != customer_id:
+            continue
+        for line in order["lines"]:
+            if line["status"] == "Cancelado":
+                continue
+            legacy = order.get("legacy", False)
+            at = line["due"] if legacy else order["at"]
+            rows.append(dict(name=line["name"], qty=line["qty"], unit=None if legacy else line["unit"],
+                             at=at, date=datetime.fromisoformat(at).astimezone(TZ).strftime("%d/%m/%Y %H:%M"),
+                             date_label="Entrega registrada anteriormente" if legacy else "Compra",
+                             status=line["status"], notes=line.get("notes", "")))
+    return sorted(rows, key=lambda x: x["at"], reverse=True)
+
+
 def payment_screen(store, s, user, users):
     st.header("Cuentas por cobrar")
     selected = st.session_state.get("selected_debtor")
@@ -1983,18 +2037,29 @@ def payment_screen(store, s, user, users):
                         method = choice("Medio de devolución", METHODS)
                         if st.form_submit_button("Registrar devolución realizada", width="stretch"):
                             send(store, user, users, "refund", dict(customer=selected, amount=cents(amount), method=method))
-        with st.expander("Ver compras, abonos y entregas"):
-            entries = [x for x in s["history"] if x["customer"] == selected]
-            for h in reversed(entries[-100:]):
-                label = "Abono / ajuste a favor" if h["amount"] < 0 else "Cargo"
-                st.write(f"**{label} · {money(abs(h['amount']))}**")
-                st.caption(f"{datetime.fromisoformat(h['at']).strftime('%d/%m %H:%M')} · {h['detail']} · {h['actor']}")
-            st.caption("Últimos 100 movimientos. El saldo incluye todo el historial. El detalle anterior a V2 sigue en la pestaña Deudas.")
-            for order in s["orders"].values():
-                if order["customer"]["id"] == selected:
-                    for line in order["lines"]:
-                        if line["status"] not in {"Entregado", "Cancelado"}:
-                            st.info(f"{order['folio']} · {line['qty']} × {line['name']} · {line['status']}")
+        with st.expander("Historial del cliente · productos, fechas y precios"):
+            purchases = customer_purchases(s, selected)
+            if not purchases:
+                st.info("No hay productos desglosados para este cliente. Los saldos importados pueden no incluir ese detalle.")
+            for purchase in purchases:
+                with st.container(border=True):
+                    st.write(f"**{purchase['qty']} × {purchase['name']}**")
+                    st.caption(purchase["date_label"] + " · " + purchase["date"])
+                    if purchase["unit"] is None:
+                        st.write("Precio no disponible en el registro anterior.")
+                    else:
+                        st.write("Precio unitario: **" + money(purchase["unit"]) + "** · Importe: **" + money(purchase["qty"] * purchase["unit"]) + "**")
+                    st.caption("Estado: " + purchase["status"])
+                    if purchase["notes"]:
+                        st.write(purchase["notes"])
+            st.caption("Estos productos son solo de este cliente. El historial incluye compras pagadas y pendientes; el saldo de arriba ya descuenta abonos y correcciones.")
+            st.markdown("**Pagos y ajustes de la cuenta**")
+            entries = [x for x in s["history"] if x["customer"] == selected and not x["detail"].startswith("Pedido ")]
+            for h in sorted(entries, key=lambda x: x["at"], reverse=True):
+                label = "Abono / ajuste a favor" if h["amount"] < 0 else "Cargo / ajuste"
+                st.write(f"{label} · **{money(abs(h['amount']))}**")
+                actor_name = users.get(h["actor"], {}).get("nombre", s["workers"].get(h["actor"], h["actor"]))
+                st.caption(f"{datetime.fromisoformat(h['at']).astimezone(TZ).strftime('%d/%m/%Y %H:%M')} · {h['detail']} · {actor_name}")
         with st.expander("Efectivo recibido y cambio entregado"):
             for payment in reversed(s["payments"]):
                 if payment["customer"] == selected and payment["method"] == "Efectivo" and not payment.get("refund"):
@@ -2442,7 +2507,7 @@ def main():
         st.write("**" + user["name"] + "** · " + user["role"])
         st.caption("Nombre recordado por hoy. Administración: abre el panel de arriba y escribe /admin.")
         if st.button("Cambiar de persona", width="stretch"):
-            if st.session_state.get("cart"):
+            if st.session_state.get("cart") or any(d.get("cart") for d in st.session_state.get("sale_drafts", {}).values()):
                 st.warning("Vacía o guarda el pedido antes de salir.")
             else:
                 st.session_state.clear()
@@ -2468,6 +2533,17 @@ def main():
     if s["workers"].get(user["id"]) != user["name"]:
         send(store, user, users, "worker", dict(name=user["name"]))
         st.stop()
+    completed_customer = st.session_state.pop("payment_result", None)
+    if completed_customer in s["customers"]:
+        balance = s["balances"].get(completed_customer, 0)
+        name = s["customers"][completed_customer]["name"]
+        st.session_state.nav_next = "Cobrar"
+        if balance <= 0:
+            st.session_state.pop("selected_debtor", None)
+            st.session_state.notice = name + " · Cuenta liquidada. No queda deuda pendiente."
+        else:
+            st.session_state.selected_debtor = completed_customer
+            st.session_state.notice = name + " · Abono registrado. Falta pagar " + money(balance)
     st.title("☕ Faro Café")
     st.caption(user["name"] + " · " + now().strftime("%d/%m/%Y"))
     if st.session_state.get("notice"):
@@ -2478,13 +2554,15 @@ def main():
         st.success("Cambio a entregar: " + st.session_state.pop("change_notice"))
     if st.session_state.get("nav_next"):
         st.session_state.nav = st.session_state.pop("nav_next")
-    nav = choice("Sección", ["Vender", "Cobrar", "Cocina", "Entregas", "Más"], horizontal=True, key="nav", label_visibility="collapsed")
+    nav = choice("Sección", ["Vender", "Mostrador", "Cobrar", "Cocina", "Entregas", "Más"], horizontal=True, key="nav", label_visibility="collapsed")
     if st.sidebar.button("↻ Actualizar datos", width="stretch"):
         store.cached = None
         st.rerun()
     ticket_screen(store, s, user, users)
     if nav == "Vender":
         sale_screen(store, s, user, users)
+    elif nav == "Mostrador":
+        sale_screen(store, s, user, users, mostrador=True)
     elif nav == "Cocina":
         kitchen_screen(store, user, users)
     elif nav == "Entregas":
